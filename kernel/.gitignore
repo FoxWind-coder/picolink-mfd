@@ -4,3 +4,11 @@ picolink-mfd/kernel/*.mod
 picolink-mfd/kernel/*.o
 picolink-mfd/kernel/*.cmd
 picolink-mfd/kernel/*.d
+*.mod
+*.o
+*.cmd
+*.d
+*.symvers
+*.order
+*.ko
+*.mod.c
