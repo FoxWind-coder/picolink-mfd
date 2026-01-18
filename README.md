@@ -116,7 +116,7 @@ To switch a pin's function (e.g., assigning a hardware block to a specific GPIO)
 ```bash
 # Writing a configuration packet
 echo -e "i2c 2 7" | sudo tee /dev/picolink
-echo -e "i2c 2 5" | sudo tee /dev/picolink
+echo -e "i2c 4 5" | sudo tee /dev/picolink
 echo -e "uart 8 9" | sudo tee /dev/picolink
 ```
 
