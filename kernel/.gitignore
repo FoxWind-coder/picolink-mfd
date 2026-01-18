@@ -1,0 +1,8 @@
+# Исключить всю папку build внутри firmware
+picolink-mfd/firmware/build/
+
+# Исключить специфические расширения в папке kernel
+picolink-mfd/kernel/*.mod
+picolink-mfd/kernel/*.o
+picolink-mfd/kernel/*.cmd
+picolink-mfd/kernel/*.d

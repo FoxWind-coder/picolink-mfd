@@ -1,0 +1,1 @@
+savedcmd_/home/sky/picolink-mfd/kernel/Module.symvers :=  scripts/mod/modpost -M -m -a      -o /home/sky/picolink-mfd/kernel/Module.symvers -T /home/sky/picolink-mfd/kernel/modules.order -i Module.symvers -e 

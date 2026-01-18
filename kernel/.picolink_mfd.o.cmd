@@ -1,0 +1,1 @@
+savedcmd_/home/sky/picolink-mfd/kernel/picolink_mfd.o := ld -m elf_x86_64 -z noexecstack --no-warn-rwx-segments   -r -o /home/sky/picolink-mfd/kernel/picolink_mfd.o @/home/sky/picolink-mfd/kernel/picolink_mfd.mod 

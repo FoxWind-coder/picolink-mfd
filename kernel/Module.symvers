@@ -1,0 +1,5 @@
+0x8bf75651	picolink_send_packet	/home/sky/picolink-mfd/kernel/picolink_mfd	EXPORT_SYMBOL_GPL	
+0x8e9de6fd	picolink_transfer	/home/sky/picolink-mfd/kernel/picolink_mfd	EXPORT_SYMBOL_GPL	
+0xf1d8de1e	picolink_gpio_driver	/home/sky/picolink-mfd/kernel/picolink_mfd	EXPORT_SYMBOL_GPL	
+0x742e2e82	picolink_i2c_driver	/home/sky/picolink-mfd/kernel/picolink_mfd	EXPORT_SYMBOL_GPL	
+0x0a6783e1	picolink_uart_push_data	/home/sky/picolink-mfd/kernel/picolink_mfd	EXPORT_SYMBOL_GPL	

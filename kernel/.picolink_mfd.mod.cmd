@@ -1,0 +1,1 @@
+savedcmd_/home/sky/picolink-mfd/kernel/picolink_mfd.mod := printf '%s\n'   core.o mfd-gpio.o mfd-i2c.o mfd-uart.o | awk '!x[$$0]++ { print("/home/sky/picolink-mfd/kernel/"$$0) }' > /home/sky/picolink-mfd/kernel/picolink_mfd.mod
