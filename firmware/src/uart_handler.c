@@ -1,0 +1,76 @@
+#include "uart_handler.h"
+#include "hardware/uart.h"
+#include "hardware/gpio.h"
+#include "hardware_map.h"
+#include "tusb.h"
+#include <string.h>
+#include <stdio.h>
+
+static uart_inst_t *u_inst = uart1;
+static bool uart_enabled = false;
+
+// Обработчик прерывания: читаем из UART -> шлем в USB
+void on_uart_rx() {
+    if (!uart_enabled) return;
+
+    uint8_t buffer[60]; // Максимальный размер полезной нагрузки
+    int count = 0;
+
+    while (uart_is_readable(u_inst) && count < 60) {
+        buffer[count++] = uart_getc(u_inst);
+    }
+    
+    if (count > 0) {
+        usb_packet_t resp;
+        memset(&resp, 0, sizeof(resp));
+        resp.header.type = CMD_TYPE_RESP;
+        resp.header.iface_idx = IFACE_UART;
+        resp.header.length = count;
+        memcpy(resp.payload, buffer, count);
+        
+        tud_vendor_write(&resp, sizeof(picolink_header_t) + count);
+        tud_vendor_write_flush();
+    }
+}
+
+void picolink_uart_handle(usb_packet_t *pkt) {
+    picolink_header_t *hdr = &pkt->header;
+
+    if (hdr->type == CMD_TYPE_CONFIG) {
+        uart_config_t *cfg = (uart_config_t *)pkt->payload;
+
+        // Проверка по карте оборудования (используем UART1, так как UART0 под отладкой)
+        if (RP2040_PIN_MAP[cfg->tx_pin].uart_id != 1 || 
+            RP2040_PIN_MAP[cfg->rx_pin].uart_id != 1) {
+            printf("UART CFG ERR: Pins must belong to UART1 (UART0 is debug)\n");
+            return;
+        }
+
+        if (uart_enabled) {
+            uart_deinit(u_inst);
+            irq_set_enabled(UART1_IRQ, false);
+        }
+
+        uart_init(u_inst, cfg->baudrate);
+        uart_set_format(u_inst, cfg->databits, cfg->stopbits, (uart_parity_t)cfg->parity);
+        
+        // Отключаем FIFO для минимизации задержек или оставляем для скорости
+        uart_set_fifo_enabled(u_inst, true);
+
+        gpio_set_function(cfg->tx_pin, GPIO_FUNC_UART);
+        gpio_set_function(cfg->rx_pin, GPIO_FUNC_UART);
+
+        // Настройка прерываний на прием
+        irq_set_exclusive_handler(UART1_IRQ, on_uart_rx);
+        irq_set_enabled(UART1_IRQ, true);
+        uart_set_irq_enables(u_inst, true, false);
+        
+        uart_enabled = true;
+        printf("UART1 Enabled: TX%d RX%d @ %d baud\n", cfg->tx_pin, cfg->rx_pin, cfg->baudrate);
+    } 
+    else if (hdr->type == CMD_TYPE_DATA && uart_enabled) {
+        for (uint16_t i = 0; i < hdr->length; i++) {
+            uart_putc(u_inst, pkt->payload[i]);
+        }
+    }
+}
