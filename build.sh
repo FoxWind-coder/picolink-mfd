@@ -14,7 +14,7 @@ KERNEL_DIR="$REPO_ROOT/kernel"
 FIRMWARE_DIR="$REPO_ROOT/firmware"
 BUILD_DIR="$REPO_ROOT/build"
 SDK_DIR="$BUILD_DIR/pico-sdk"
-UF2_FILE="$FIRMWARE_DIR/build/picolink_pico.uf2"
+UF2_FILE="$FIRMWARE_DIR/build/picolink_mfd.uf2"
 
 # --- Check/Install Pico SDK ---
 echo -e "\n${YELLOW}[0/3] Checking Pico SDK...${NC}"
