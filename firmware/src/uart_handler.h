@@ -3,10 +3,9 @@
 
 #include "protocol.h"
 
-// Обработчик команд UART (конфигурация и передача данных)
 void picolink_uart_handle(usb_packet_t *pkt);
 
-// Обработчик прерывания приема данных (если выносим в заголовок)
+//uart irq handler
 void on_uart_rx(void);
 
 #endif

@@ -1,13 +1,13 @@
 cmake_minimum_required(VERSION 3.13)
 
-# Подтягиваем SDK
+# Import the SDK
 include(pico_sdk_import.cmake)
 
 project(picolink_firmware C CXX ASM)
 set(CMAKE_C_STANDARD 11)
 set(CMAKE_CXX_STANDARD 17)
 
-# Инициализируем SDK
+# Initialize the SDK
 pico_sdk_init()
 
 add_executable(picolink_mfd
@@ -18,11 +18,11 @@ add_executable(picolink_mfd
     src/uart_handler.c
 )
 
-# Подключаем TinyUSB и стандартные возможности
-# tinyusb_device — это критически важная библиотека для нашего USB-стека
+# Link TinyUSB and standard libraries
+# tinyusb_device is a critical library for the USB stack
 target_link_libraries(picolink_mfd 
     pico_stdlib 
-    pico_multicore      # Для работы со вторым ядром
+    pico_multicore      # Required for multicore support
     tinyusb_device 
     tinyusb_board
     hardware_i2c
@@ -30,10 +30,10 @@ target_link_libraries(picolink_mfd
     hardware_adc
 )
 
-# Включаем генерацию .uf2 файла для прошивки
+# Enable generation of .uf2 binary for flashing
 pico_add_extra_outputs(picolink_mfd)
 
-# Настройка TinyUSB (указываем, где искать конфиг)
+# TinyUSB configuration (set include path for tusb_config.h)
 target_include_directories(picolink_mfd PRIVATE
     ${CMAKE_CURRENT_SOURCE_DIR}
     ${CMAKE_CURRENT_SOURCE_DIR}/src

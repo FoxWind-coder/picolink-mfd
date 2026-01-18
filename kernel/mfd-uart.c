@@ -4,21 +4,13 @@
 #include <linux/tty.h>
 #include <linux/tty_flip.h>
 #include <linux/slab.h>
-#include <linux/serial.h> // Добавлено для работы с драйвером
+#include <linux/serial.h> // Added for driver operations
 #include "picolink.h"
 
-// Прототипы для предотвращения warning: no previous prototype
+// Prototypes to prevent "no previous prototype" warnings
 void picolink_uart_push_data(const u8 *data, size_t size);
 int picolink_tty_init(void);
 void picolink_tty_exit(void);
-
-// struct picolink_uart {
-//     struct picolink_dev *mfd;
-//     struct tty_port port;
-//     struct device *dev;
-//     uint8_t tx_pin;
-//     uint8_t rx_pin;
-// };
 
 static struct tty_driver *picolink_tty_driver;
 struct picolink_uart *uart_instance;
@@ -29,7 +21,7 @@ static int p_uart_open(struct tty_struct *tty, struct file *filp) {
 
     if (!pu) return -ENODEV;
 
-    // Важно: tty_port_open ожидает, что tty->port уже установлен
+    // Note: tty_port_open expects tty->port to be already set
     tty->port = &pu->port;
     tty->driver_data = pu;
 
@@ -52,7 +44,7 @@ static ssize_t p_uart_write(struct tty_struct *tty, const u8 *buf, size_t count)
     usb_packet_t *pkt;
     int len = count > 60 ? 60 : count;
 
-    // КРИТИЧЕСКАЯ ПРОВЕРКА
+    // CRITICAL CHECK
     if (!pu || !pu->mfd || !pu->mfd->udev) {
         pr_err("picolink-uart: Attempt to write to NULL device\n");
         return -ENODEV;
@@ -87,7 +79,7 @@ static ssize_t p_uart_write(struct tty_struct *tty, const u8 *buf, size_t count)
 }
 
 static unsigned int p_uart_write_room(struct tty_struct *tty) {
-    return 64; // Размер буфера USB пакета
+    return 64; // Size of USB packet buffer
 }
 
 static void p_uart_set_termios(struct tty_struct *tty, const struct ktermios *old) {
@@ -98,7 +90,7 @@ static void p_uart_set_termios(struct tty_struct *tty, const struct ktermios *ol
 
     if (!pu || !pu->mfd || !pu->mfd->udev) return;
 
-    // Выделяем память под URB и пакет
+    // Allocate memory for URB and packet
     urb = usb_alloc_urb(0, GFP_ATOMIC);
     if (!urb) return;
 
@@ -120,7 +112,7 @@ static void p_uart_set_termios(struct tty_struct *tty, const struct ktermios *ol
     cfg->stopbits = (C_CSTOPB(tty)) ? 2 : 1;
     cfg->parity = (C_PARENB(tty)) ? 1 : 0;
 
-    // Используем тот же callback, что и для write, так как он просто чистит память
+    // Use the same callback as write, since it simply cleans up memory
     usb_fill_bulk_urb(urb, pu->mfd->udev,
                       usb_sndbulkpipe(pu->mfd->udev, pu->mfd->bulk_out_endpointAddr),
                       pkt, sizeof(*pkt),
@@ -138,7 +130,7 @@ static const struct tty_operations p_uart_ops = {
     .write = p_uart_write,
     .write_room = p_uart_write_room,
     .set_termios = p_uart_set_termios,
-    .install = tty_standard_install, // Рекомендуется добавить
+    .install = tty_standard_install, // Recommended to include
 };
 
 static int picolink_uart_probe(struct platform_device *pdev) {
@@ -155,9 +147,9 @@ static int picolink_uart_probe(struct platform_device *pdev) {
     if (!pu->mfd) return -EINVAL;
 
     tty_port_init(&pu->port);
-    pu->port.ops = &p_port_ops; // СВЯЗЫВАЕМ ОПЕРАЦИИ ПОРТА
+    pu->port.ops = &p_port_ops; // Bind port operations
 
-    // Регистрируем устройство
+    // Register device
     pu->dev = tty_port_register_device(&pu->port, picolink_tty_driver, 0, &pdev->dev);
     if (IS_ERR(pu->dev)) {
         ret = PTR_ERR(pu->dev);
@@ -172,7 +164,7 @@ static int picolink_uart_probe(struct platform_device *pdev) {
     return 0;
 }
 
-// Эту функцию должен вызывать core.c при получении данных RESP от USB
+// This function should be called by core.c when receiving RESP data from USB
 void picolink_uart_push_data(const u8 *data, size_t size) {
     if (uart_instance) {
         tty_insert_flip_string(&uart_instance->port, data, size);
@@ -195,7 +187,7 @@ struct platform_driver picolink_uart_driver = {
     .remove = picolink_uart_remove,
 };
 
-// Инициализация драйвера TTY (вызывается один раз при загрузке модуля)
+// TTY driver initialization (called once during module load)
 int __init picolink_tty_init(void) {
     picolink_tty_driver = tty_alloc_driver(1, TTY_DRIVER_REAL_RAW | TTY_DRIVER_DYNAMIC_DEV);
     if (IS_ERR(picolink_tty_driver))
@@ -216,6 +208,6 @@ int __init picolink_tty_init(void) {
 void picolink_tty_exit(void) {
     if (picolink_tty_driver) {
         tty_unregister_driver(picolink_tty_driver);
-        tty_driver_kref_put(picolink_tty_driver); // В новых ядрах вместо put_tty_driver
+        tty_driver_kref_put(picolink_tty_driver); // Replacement for put_tty_driver in modern kernels
     }
 }

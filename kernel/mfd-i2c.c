@@ -23,7 +23,7 @@ static int picolink_i2c_usb_xfer(struct picolink_i2c *pi2c, struct i2c_msg *msg)
         goto out;
     }
 
-    // 1. Подготовка запроса
+    /* Prepare the request packet */
     pkt_out->header.iface_idx = IFACE_I2C;
     if (msg->flags & I2C_M_RD) {
         pkt_out->header.type = CMD_TYPE_READ;
@@ -37,11 +37,11 @@ static int picolink_i2c_usb_xfer(struct picolink_i2c *pi2c, struct i2c_msg *msg)
         if (msg->len > 0) memcpy(&pkt_out->payload[1], msg->buf, msg->len);
     }
 
-    // 2. Используем новую общую функцию из core.c
-    // Она сама отправит пакет и будет ждать завершения completion в callback-е
+    /* Use the common transfer function from core.c. 
+       It sends the packet and waits for completion via callback. */
     ret = picolink_transfer(mfd_core, pkt_out, pkt_in);
 
-    // 3. Анализ результата
+    /* Analyze the transfer result */
     if (ret == 0) {
         if (pkt_in->header.type == CMD_TYPE_RESP && pkt_in->header.iface_idx == IFACE_I2C) {
             if (pkt_in->header.length > 0) {
@@ -50,7 +50,7 @@ static int picolink_i2c_usb_xfer(struct picolink_i2c *pi2c, struct i2c_msg *msg)
                 }
                 ret = 0; 
             } else {
-                ret = -ENXIO; // NACK (устройство не ответило)
+                ret = -ENXIO; /* NACK (device did not respond) */
             }
         } else {
             ret = -EPROTO; 

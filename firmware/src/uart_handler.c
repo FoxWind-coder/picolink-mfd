@@ -9,11 +9,11 @@
 static uart_inst_t *u_inst = uart1;
 static bool uart_enabled = false;
 
-// Обработчик прерывания: читаем из UART -> шлем в USB
+// Interrupt handler: read from UART and send to USB
 void on_uart_rx() {
     if (!uart_enabled) return;
 
-    uint8_t buffer[60]; // Максимальный размер полезной нагрузки
+    uint8_t buffer[60]; // Maximum payload size
     int count = 0;
 
     while (uart_is_readable(u_inst) && count < 60) {
@@ -39,7 +39,7 @@ void picolink_uart_handle(usb_packet_t *pkt) {
     if (hdr->type == CMD_TYPE_CONFIG) {
         uart_config_t *cfg = (uart_config_t *)pkt->payload;
 
-        // Проверка по карте оборудования (используем UART1, так как UART0 под отладкой)
+        // Hardware map validation (using UART1 as UART0 is reserved for debugging)
         if (RP2040_PIN_MAP[cfg->tx_pin].uart_id != 1 || 
             RP2040_PIN_MAP[cfg->rx_pin].uart_id != 1) {
             printf("UART CFG ERR: Pins must belong to UART1 (UART0 is debug)\n");
@@ -54,13 +54,13 @@ void picolink_uart_handle(usb_packet_t *pkt) {
         uart_init(u_inst, cfg->baudrate);
         uart_set_format(u_inst, cfg->databits, cfg->stopbits, (uart_parity_t)cfg->parity);
         
-        // Отключаем FIFO для минимизации задержек или оставляем для скорости
+        // Enable FIFO for better performance
         uart_set_fifo_enabled(u_inst, true);
 
         gpio_set_function(cfg->tx_pin, GPIO_FUNC_UART);
         gpio_set_function(cfg->rx_pin, GPIO_FUNC_UART);
 
-        // Настройка прерываний на прием
+        // Configure RX interrupts
         irq_set_exclusive_handler(UART1_IRQ, on_uart_rx);
         irq_set_enabled(UART1_IRQ, true);
         uart_set_irq_enables(u_inst, true, false);

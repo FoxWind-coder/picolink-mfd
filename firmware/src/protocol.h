@@ -11,12 +11,12 @@
 #define PICOLINK_VID 0x1D50
 #define PICOLINK_PID 0x6150
 
-// Типы команд
+// Command types
 typedef enum {
     CMD_TYPE_CONFIG = 0x01,
     CMD_TYPE_DATA   = 0x02,
-    CMD_TYPE_READ   = 0x03, // Запрос на чтение
-    CMD_TYPE_RESP   = 0x04  // Ответ с данными
+    CMD_TYPE_READ   = 0x03, // Read request
+    CMD_TYPE_RESP   = 0x04  // Data response
 } cmd_type_t;
 
 typedef enum {
@@ -56,10 +56,9 @@ typedef struct __attribute__((packed)) {
     uint16_t length;    
 } picolink_header_t;
 
-// Добавляем сюда, чтобы main.c видел этот тип
 typedef struct __attribute__((packed)) {
     picolink_header_t header;
-    uint8_t payload[60]; // 64 (общий размер) - 4 (заголовок)
+    uint8_t payload[60]; // 64 (total size) - 4 (header size)
 } usb_packet_t;
 
 #endif

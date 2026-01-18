@@ -10,11 +10,11 @@ struct picolink_gpio {
     struct gpio_chip chip;
 };
 
-/* Прототипы для предотвращения implicit declaration */
+/* Prototypes to prevent implicit declaration */
 static int picolink_gpio_direction_output(struct gpio_chip *chip, unsigned int offset, int value);
 static int picolink_gpio_set_config(struct gpio_chip *chip, unsigned int offset, unsigned long config);
 
-// --- ЧТЕНИЕ (INPUT) ---
+/* READ (INPUT) */
 static int picolink_gpio_get(struct gpio_chip *chip, unsigned int offset) {
     struct picolink_gpio *pgpio = gpiochip_get_data(chip);
     struct picolink_dev *mfd_core = dev_get_drvdata(pgpio->pdev->dev.parent);
@@ -29,13 +29,11 @@ static int picolink_gpio_get(struct gpio_chip *chip, unsigned int offset) {
         return -ENOMEM;
     }
 
-    // ИЗМЕНЕНО: Использование -> вместо . для указателей
     tx_pkt->header.type = CMD_TYPE_READ;
     tx_pkt->header.iface_idx = IFACE_GPIO;
     tx_pkt->header.length = 1;
     tx_pkt->payload[0] = (uint8_t)offset;
 
-    // ИЗМЕНЕНО: Передаем сами указатели, а не их адреса (&)
     ret = picolink_transfer(mfd_core, tx_pkt, rx_pkt);
 
     if (ret == 0) {
@@ -51,11 +49,11 @@ static int picolink_gpio_get(struct gpio_chip *chip, unsigned int offset) {
     return value;
 }
 
-// --- ЗАПИСЬ (OUTPUT) ---
+/* WRITE (OUTPUT) */
 static void picolink_gpio_set(struct gpio_chip *chip, unsigned int offset, int value) {
     struct picolink_gpio *pgpio = gpiochip_get_data(chip);
     struct picolink_dev *mfd_core = dev_get_drvdata(pgpio->pdev->dev.parent);
-    usb_packet_t *pkt; // ИЗМЕНЕНО: Исправлен тип переменной на указатель
+    usb_packet_t *pkt;
 
     pkt = kzalloc(sizeof(*pkt), GFP_ATOMIC); 
     if (!pkt) return;
@@ -70,7 +68,7 @@ static void picolink_gpio_set(struct gpio_chip *chip, unsigned int offset, int v
     kfree(pkt);
 }
 
-// --- УПРАВЛЕНИЕ КОНФИГУРАЦИЕЙ (PULL-UP/DOWN) ---
+/* CONFIGURATION MANAGEMENT (PULL-UP/DOWN) */
 static int picolink_gpio_set_config(struct gpio_chip *chip, unsigned int offset, unsigned long config) {
     struct picolink_gpio *pgpio = gpiochip_get_data(chip);
     struct picolink_dev *mfd_core = dev_get_drvdata(pgpio->pdev->dev.parent);
@@ -127,11 +125,10 @@ static int picolink_gpio_direction_output(struct gpio_chip *chip, unsigned int o
     pkt->payload[0] = (uint8_t)offset;
     pkt->payload[1] = 0x01; // GPIO_MODE_OUT
 
-    // ИЗМЕНЕНО: Передаем pkt (указатель), а не &pkt
     ret = picolink_send_packet(mfd_core->udev, mfd_core->bulk_out_endpointAddr, pkt, sizeof(*pkt));
     
     if (ret >= 0) {
-        kfree(pkt); // Освобождаем перед вызовом set
+        kfree(pkt); // Free before calling set
         picolink_gpio_set(chip, offset, value);
         return 0;
     }

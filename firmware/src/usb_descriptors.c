@@ -2,8 +2,6 @@
 #include "tusb.h"
 #include "protocol.h"
 
-// --- 1. Дескрипторы (Данные) ---
-
 // Device Descriptor
 tusb_desc_device_t const desc_device = {
     .bLength            = sizeof(tusb_desc_device_t),
@@ -43,17 +41,18 @@ char const* string_desc_arr[] = {
 
 static uint16_t _desc_str[32];
 
-// --- 2. Callback-функции (Логика) ---
-
+// Invoked when received GET DEVICE DESCRIPTOR
 uint8_t const * tud_descriptor_device_cb(void) {
     return (uint8_t const *) &desc_device;
 }
 
+// Invoked when received GET CONFIGURATION DESCRIPTOR
 uint8_t const * tud_descriptor_configuration_cb(uint8_t index) {
     (void) index;
     return desc_configuration;
 }
 
+// Invoked when received GET STRING DESCRIPTOR request
 uint16_t const* tud_descriptor_string_cb(uint8_t index, uint16_t langid) {
     (void) langid;
     uint8_t chr_count;
@@ -62,13 +61,19 @@ uint16_t const* tud_descriptor_string_cb(uint8_t index, uint16_t langid) {
         memcpy(&_desc_str[1], string_desc_arr[0], 2);
         chr_count = 1;
     } else {
+        // Note: the 0th index is handled above (language ID)
         if ( !(index < sizeof(string_desc_arr)/sizeof(string_desc_arr[0])) ) return NULL;
         const char* str = string_desc_arr[index];
+        
+        // Cap at 31 characters to fit in the uint16_t buffer (minus header)
         chr_count = strlen(str);
         if ( chr_count > 31 ) chr_count = 31;
+        
+        // Convert ASCII string into UTF-16
         for(uint8_t i=0; i<chr_count; i++) _desc_str[1+i] = str[i];
     }
 
+    // first byte is length (including header), second byte is string type
     _desc_str[0] = (TUSB_DESC_STRING << 8 ) | (2*chr_count + 2);
     return _desc_str;
 }

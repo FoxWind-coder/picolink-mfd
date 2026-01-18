@@ -8,25 +8,25 @@
 #include <linux/tty.h>
 #include "picolink.h"
 
-// Ссылаемся на драйвер GPIO, который лежит в другом файле
+// Reference to platform drivers defined in other files
 extern struct platform_driver picolink_gpio_driver;
 extern struct platform_driver picolink_i2c_driver;
-extern struct platform_driver picolink_uart_driver; // Добавлено
+extern struct platform_driver picolink_uart_driver;
 
 extern struct picolink_uart *uart_instance;
 
-extern int picolink_tty_init(void); // Добавлено
-extern void picolink_tty_exit(void); // Добавлено
+extern int picolink_tty_init(void);
+extern void picolink_tty_exit(void);
 extern void picolink_uart_push_data(const u8 *data, size_t size);
 
-// Описание дочерних устройств (клеток MFD)
+// MFD cells description
 static struct mfd_cell picolink_cells[] = {
     { .name = "picolink-gpio" },
-    { .name = "picolink-i2c"  }, // Теперь добавляем
+    { .name = "picolink-i2c"  },
     { .name = "picolink-uart" },
 };
 
-// --- НОВОЕ: Обработка входящих данных от Pico ---
+// Handle incoming data from Pico
 static void picolink_bulk_in_callback(struct urb *urb) {
     struct picolink_dev *dev = urb->context;
     usb_packet_t *pkt = dev->bulk_in_buffer;
@@ -34,46 +34,44 @@ static void picolink_bulk_in_callback(struct urb *urb) {
     int len;
 
     switch (status) {
-    case 0:          /* Успех */
+    case 0:          /* Success */
         break;
     case -ECONNRESET:
     case -ENOENT:
     case -ESHUTDOWN:
-        return;      /* Устройство отключено */
+        return;      /* Device disconnected */
     default:
-        goto resubmit; /* Ошибка протокола, пробуем снова */
+        goto resubmit; /* Protocol error, try again */
     }
 
-    // Проверка: получили ли мы хотя бы заголовок?
+    // Check if we received at least the header
     if (urb->actual_length >= sizeof(picolink_header_t)) {
         len = pkt->header.length;
         
-        // Защита от переполнения: данные не могут быть больше полезной нагрузки пакета
+        // Overflow protection: data length cannot exceed packet payload size
         if (len > 60) len = 60; 
 
-        // Если пакет пришел для UART
+        // Handle UART interface packets
         if (pkt->header.iface_idx == IFACE_UART) {
-            // Тип RESP обычно используется для данных из UART Pico в компьютер
+            // RESP type is typically used for data from Pico UART to PC
             if (pkt->header.type == CMD_TYPE_RESP || pkt->header.type == CMD_TYPE_DATA) {
                 picolink_uart_push_data(pkt->payload, len);
             }
-        }else if (pkt->header.iface_idx == IFACE_I2C || pkt->header.iface_idx == IFACE_GPIO) {
-            // Копируем ответ в структуру устройства и "будим" ждущий поток
-            // pr_info("PicoLink Debug: Callback got I2C/GPIO packet, type: %d\n", pkt->header.type);
+        } else if (pkt->header.iface_idx == IFACE_I2C || pkt->header.iface_idx == IFACE_GPIO) {
+            // Copy response to device structure and wake up waiting thread
             memcpy(&dev->i2c_resp, pkt, sizeof(usb_packet_t));
             complete(&dev->i2c_done);
         }
-        // Здесь можно добавить: else if (pkt->header.iface_idx == IFACE_I2C) ...
     }
 
 resubmit:
-    // Перезапуск URB критически важен для непрерывного чтения
+    // URB resubmission is critical for continuous reading
     if (usb_submit_urb(dev->read_urb, GFP_ATOMIC)) {
         dev_err(&dev->udev->dev, "Failed to resubmit read urb\n");
     }
 }
 
-// Функция отправки пакета (экспортируемая для mfd-gpio.o)
+// Packet transmission function (exported for mfd-gpio.o)
 int picolink_send_packet(struct usb_device *udev, uint8_t endpoint, void *data, int len) {
     int actual_length;
     return usb_bulk_msg(udev, usb_sndbulkpipe(udev, endpoint),
@@ -81,7 +79,7 @@ int picolink_send_packet(struct usb_device *udev, uint8_t endpoint, void *data, 
 }
 EXPORT_SYMBOL_GPL(picolink_send_packet);
 
-// Обработчик записи в /dev/picolink
+// Handler for /dev/picolink writes
 static ssize_t picolink_dev_write(struct file *file, const char __user *buf, size_t count, loff_t *ppos) {
     struct miscdevice *mdev = file->private_data;
     struct picolink_dev *dev = container_of(mdev, struct picolink_dev, miscdev);
@@ -120,11 +118,11 @@ static ssize_t picolink_dev_write(struct file *file, const char __user *buf, siz
         uart_config_t *ucfg = (uart_config_t *)pkt->payload;
         ucfg->tx_pin = (uint8_t)tx;
         ucfg->rx_pin = (uint8_t)rx;
-        ucfg->baudrate = 115200; // Дефолт при смене пинов
+        ucfg->baudrate = 115200; // Default when changing pins
         ucfg->databits = 8;
         ucfg->stopbits = 1;
 
-        // Обновляем локальные данные в mfd-uart, чтобы stty их не затер
+        // Update local data in mfd-uart to prevent stty from overwriting them
         if (uart_instance) {
             uart_instance->tx_pin = (uint8_t)tx;
             uart_instance->rx_pin = (uint8_t)rx;
@@ -142,20 +140,20 @@ int picolink_transfer(struct picolink_dev *dev, usb_packet_t *tx_pkt, usb_packet
 
     reinit_completion(&dev->i2c_done);
 
-    // 1. Отправляем команду
+    // 1. Send command
     ret = picolink_send_packet(dev->udev, dev->bulk_out_endpointAddr, tx_pkt, sizeof(usb_packet_t));
     if (ret < 0) {
         dev_err(&dev->udev->dev, "Transfer: USB send failed: %d\n", ret);
         return ret;
     }
 
-    // 2. Ждем ответа от callback (тайм-аут 500мс)
+    // 2. Wait for callback response (500ms timeout)
     if (!wait_for_completion_timeout(&dev->i2c_done, msecs_to_jiffies(500))) {
         dev_err(&dev->udev->dev, "Transfer: Timeout waiting for Pico response!\n");
         return -ETIMEDOUT;
     }
 
-    // 3. Копируем результат
+    // 3. Copy result
     if (rx_pkt) {
         memcpy(rx_pkt, &dev->i2c_resp, sizeof(usb_packet_t));
     }
@@ -181,7 +179,7 @@ static int picolink_probe(struct usb_interface *interface, const struct usb_devi
     dev->udev = usb_get_dev(interface_to_usbdev(interface));
     dev->interface = interface;
 
-    // Поиск эндпоинтов
+    // Search for endpoints
     iface_desc = interface->cur_altsetting;
     for (i = 0; i < iface_desc->desc.bNumEndpoints; i++) {
         endpoint = &iface_desc->endpoint[i].desc;
@@ -198,7 +196,7 @@ static int picolink_probe(struct usb_interface *interface, const struct usb_devi
         goto err_put;
     }
 
-    // --- НОВОЕ: Настройка чтения ---
+    // Setup read URB
     dev->bulk_in_buffer = kmalloc(64, GFP_KERNEL);
     dev->read_urb = usb_alloc_urb(0, GFP_KERNEL);
     if (!dev->read_urb || !dev->bulk_in_buffer) {
@@ -213,7 +211,7 @@ static int picolink_probe(struct usb_interface *interface, const struct usb_devi
     
     usb_set_intfdata(interface, dev);
 
-    // Регистрация символьного устройства
+    // Register misc device
     dev->miscdev.minor = MISC_DYNAMIC_MINOR;
     dev->miscdev.name = "picolink";
     dev->miscdev.fops = &picolink_fops;
@@ -221,11 +219,11 @@ static int picolink_probe(struct usb_interface *interface, const struct usb_devi
     ret = misc_register(&dev->miscdev);
     if (ret) goto err_free_urb;
 
-    // Запуск слушателя USB
+    // Start USB listener
     ret = usb_submit_urb(dev->read_urb, GFP_KERNEL);
     if (ret) goto err_misc;
 
-    // Регистрация MFD
+    // Register MFD cells
     ret = mfd_add_devices(&interface->dev, PLATFORM_DEVID_AUTO,
                           picolink_cells, ARRAY_SIZE(picolink_cells),
                           NULL, 0, NULL);
@@ -278,22 +276,23 @@ static struct usb_driver picolink_driver = {
 static int __init picolink_init(void) {
     int ret;
 
-    // 1. Инициализация TTY драйвера (создание структуры)    
+    // 1. Initialize TTY driver structure
     ret = picolink_tty_init();
     if (ret) goto err_tty;    
 
-    // 1. Регистрируем платформенный драйвер GPIO
+    // 2. Register platform GPIO driver
     ret = platform_driver_register(&picolink_gpio_driver);
     if (ret) goto err_gpio;
 
-    // 2. Регистрируем платформенный драйвер I2C
+    // 3. Register platform I2C driver
     ret = platform_driver_register(&picolink_i2c_driver);
     if (ret) goto err_i2c;
 
-    ret = platform_driver_register(&picolink_uart_driver); // Не забудьте эту строку!
+    // 4. Register platform UART driver
+    ret = platform_driver_register(&picolink_uart_driver);
     if (ret) goto err_uart;
 
-    // 3. Регистрируем USB драйвер (он создаст устройства, которые подхватят драйверы выше)
+    // 5. Register USB driver (triggers MFD cell creation)
     ret = usb_register(&picolink_driver);
 
     return 0;
@@ -310,7 +309,7 @@ err_tty:
 }
 
 static void __exit picolink_exit(void) {
-    // Выгружаем в обратном порядке
+    // Unload in reverse order
     usb_deregister(&picolink_driver);
     platform_driver_unregister(&picolink_uart_driver);
     platform_driver_unregister(&picolink_i2c_driver);

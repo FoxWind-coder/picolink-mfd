@@ -1,6 +1,6 @@
 #include "hardware_map.h"
 
-// Константа 0xFF означает отсутствие функции на пине
+// Constant 0xFF indicates the absence of a function on a pin
 const pin_capabilities_t RP2040_PIN_MAP[30] = {
     // Pin, UART, I2C, SPI, ADC
     {0,  0,    0,    0,    false}, // GP0:  U0_TX,  I0_SDA, S0_RX

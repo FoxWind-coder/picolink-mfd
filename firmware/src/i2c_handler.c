@@ -19,7 +19,7 @@ void picolink_i2c_handle(usb_packet_t *pkt) {
 
         if (sda >= 30 || scl >= 30) return;
 
-        // Проверка по hardware_map: должны ли эти пины принадлежать одной шине?
+        // Check hardware_map: do these pins belong to the same bus?
         uint8_t sda_id = RP2040_PIN_MAP[sda].i2c_id;
         uint8_t scl_id = RP2040_PIN_MAP[scl].i2c_id;
         
@@ -28,7 +28,7 @@ void picolink_i2c_handle(usb_packet_t *pkt) {
             return;
         }
         
-        // Если шина уже была активна, гасим её и сбрасываем старые пины
+        // If the bus was already active, deinitialize it and reset previous pins
         if (current_i2c) {
             i2c_deinit(current_i2c);
             gpio_set_function(current_sda, GPIO_FUNC_SIO);
@@ -57,12 +57,12 @@ void picolink_i2c_handle(usb_packet_t *pkt) {
         int result;
 
         if (len == 0) {
-            // Режим сканирования (i2cdetect)
-            // Читаем 1 байт - это самый надежный способ проверки устройства на RP2040
+            // Scan mode (i2cdetect)
+            // Reading 1 byte is the most reliable way to check for a device on RP2040
             uint8_t dummy;
             result = i2c_read_blocking(current_i2c, addr, &dummy, 1, false);
         } else {
-            // Обычная запись данных
+            // Standard data write
             result = i2c_write_blocking(current_i2c, addr, &pkt->payload[1], len, false);
         }
         
@@ -74,7 +74,7 @@ void picolink_i2c_handle(usb_packet_t *pkt) {
 
         if (result >= 0) printf("I2C ADDR FOUND: 0x%02x\n", addr);
 
-        // Маленькая пауза перед ответом в USB для стабильности Bulk-эндпоинта
+        // Small delay before USB response to maintain Bulk endpoint stability
         // sleep_us(100); 
         tud_vendor_write(&resp, sizeof(resp));
         tud_vendor_write_flush();
