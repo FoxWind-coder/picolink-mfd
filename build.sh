@@ -15,11 +15,19 @@ FIRMWARE_DIR="$REPO_ROOT/firmware"
 BUILD_DIR="$REPO_ROOT/build"
 SDK_DIR="$BUILD_DIR/pico-sdk"
 UF2_FILE="$FIRMWARE_DIR/build/picolink_mfd.uf2"
+TEST_SCRIPT="$REPO_ROOT/configurator.sh"
+
+# --- Helper Function for Sudo ---
+run_as_root() {
+    if [ "$EUID" -ne 0 ]; then
+        sudo "$@"
+    else
+        "$@"
+    fi
+}
 
 # --- Check/Install Pico SDK ---
 echo -e "\n${YELLOW}[0/3] Checking Pico SDK...${NC}"
-
-# Если переменная установлена, проверяем, существует ли этот путь
 if [ -n "$PICO_SDK_PATH" ] && [ ! -d "$PICO_SDK_PATH" ]; then
     echo -e "${YELLOW}Warning: PICO_SDK_PATH is set but directory does not exist. Resetting...${NC}"
     unset PICO_SDK_PATH
@@ -33,22 +41,15 @@ if [ -z "$PICO_SDK_PATH" ]; then
     fi
     export PICO_SDK_PATH="$SDK_DIR"
 fi
-
 echo -e "${GREEN}Using Pico SDK at: $PICO_SDK_PATH${NC}"
 
 # --- Compiling Firmware ---
 echo -e "\n${YELLOW}[1/3] Compiling Firmware...${NC}"
 if [ -d "$FIRMWARE_DIR" ]; then
-    # ОЧИСТКА: Удаляем старый кэш, чтобы избежать конфликтов путей
-    if [ -f "$FIRMWARE_DIR/build/CMakeCache.txt" ]; then
-        echo -e "${YELLOW}Cleaning previous CMake cache...${NC}"
-        rm -rf "$FIRMWARE_DIR/build"
-    fi
-
+    [ -d "$FIRMWARE_DIR/build" ] && rm -rf "$FIRMWARE_DIR/build"
     mkdir -p "$FIRMWARE_DIR/build"
     cd "$FIRMWARE_DIR/build"
     
-    # Конфигурация и сборка прошивки
     cmake -DPICO_SDK_PATH="$PICO_SDK_PATH" ..
     make -j$(nproc)
     
@@ -66,8 +67,12 @@ fi
 # --- Compiling Kernel Module ---
 echo -e "\n${YELLOW}[2/3] Compiling Kernel Module...${NC}"
 cd "$KERNEL_DIR"
-make clean  # Чистая сборка модуля
-make
+# Create build directory for the kernel module if it doesn't exist
+mkdir -p "$KERNEL_DIR/build"
+
+# Using the specific command requested
+make -j$(nproc) -C /lib/modules/$(uname -r)/build M="$(pwd)/build" src="$(pwd)" modules
+
 if [ $? -eq 0 ]; then
     echo -e "${GREEN}Kernel module compiled successfully.${NC}"
 else
@@ -78,27 +83,57 @@ fi
 # --- Deployment ---
 echo -e "\n${YELLOW}[3/3] Deployment Check...${NC}"
 
-if [ "$EUID" -ne 0 ]; then
-    echo -e "${YELLOW}Running as non-root user.${NC}"
-    echo -e "Compilation finished. Please manual flash and insmod."
-else
-    echo -e "${GREEN}Running with root privileges.${NC}"
-    
+# 1. Flash Confirmation
+echo -n -e "${YELLOW}Do you want to flash the Pico using picotool? (y/n): ${NC}"
+read -r flash_choice
+if [ "$flash_choice" == "y" ]; then
     if command -v picotool &> /dev/null; then
-        echo -e "${YELLOW}Flashing Pico...${NC}"
-        picotool load -x "$UF2_FILE"
-        [ $? -eq 0 ] && echo -e "${GREEN}Pico flashed!${NC}" || echo -e "${RED}Flash failed.${NC}"
+        echo -e "${YELLOW}Flashing Pico (may require sudo)...${NC}"
+        run_as_root picotool load -x "$UF2_FILE"
+        if [ $? -eq 0 ]; then
+            echo -e "${GREEN}Pico flashed successfully!${NC}"
+            FLASH_SUCCESS=true
+        else
+            echo -e "${RED}Flash failed.${NC}"
+        fi
     else
-        echo -e "${RED}picotool not found.${NC}"
-    fi
-
-    echo -n -e "\n${YELLOW}Install kernel module? (y/n): ${NC}"
-    read -r choice
-    if [ "$choice" == "y" ]; then
-        rmmod picolink_mfd 2>/dev/null
-        insmod "$KERNEL_DIR/picolink_mfd.ko"
-        [ $? -eq 0 ] && echo -e "${GREEN}Module installed.${NC}" || echo -e "${RED}Failed to install.${NC}"
+        echo -e "${RED}Error: picotool not found in PATH.${NC}"
     fi
 fi
 
-echo -e "\n${GREEN}Build process completed.${NC}"
+# 2. Module Installation Confirmation
+echo -n -e "\n${YELLOW}Do you want to (re)install the kernel module? (y/n): ${NC}"
+read -r insmod_choice
+if [ "$insmod_choice" == "y" ]; then
+    echo -e "${YELLOW}Installing module (requires sudo)...${NC}"
+    run_as_root rmmod picolink_mfd 2>/dev/null
+    run_as_root insmod "$KERNEL_DIR/build/picolink_mfd.ko"
+    if [ $? -eq 0 ]; then
+        echo -e "${GREEN}Module installed successfully.${NC}"
+        MOD_SUCCESS=true
+    else
+        echo -e "${RED}Failed to install kernel module.${NC}"
+    fi
+fi
+
+if ls "$KERNEL_DIR/build/picolink_mfd.ko"; then
+    MOD_SUCCESS=true
+fi
+
+# 3. Final Step: Run Test Script
+if [ "$FLASH_SUCCESS" = true ] || [ "$MOD_SUCCESS" = true ]; then
+    echo -e "\n${GREEN}Deployment steps completed.${NC}"
+    if [ -f "$TEST_SCRIPT" ]; then
+        echo -n -e "${YELLOW}Would you like to run the setup script now? (y/n): ${NC}"
+        read -r run_test
+        if [ "$run_test" == "y" ]; then
+            cd ".."
+            chmod +x "$TEST_SCRIPT"
+            run_as_root "$TEST_SCRIPT"
+        fi
+    else
+        echo -e "${YELLOW}Note: test_activation.sh not found in $REPO_ROOT${NC}"
+    fi
+fi
+
+echo -e "\n${GREEN}Build and Deployment process finished.${NC}"
