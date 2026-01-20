@@ -12,3 +12,4 @@ picolink-mfd/kernel/*.d
 *.order
 *.ko
 *.mod.c
+build
