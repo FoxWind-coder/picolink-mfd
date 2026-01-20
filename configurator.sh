@@ -68,6 +68,7 @@ SDA=""
 RX=""
 TX=""
 declare -A LEDS
+declare -A ADCS
 
 # 2. Process command line arguments
 if [ $# -gt 0 ]; then
@@ -82,6 +83,11 @@ if [ $# -gt 0 ]; then
                 TRIGGER="${arg#*=}"
                 LEDS[$PIN]=$TRIGGER
                 ;;
+            adc*=*)
+                PIN=$(echo "${arg%=*}" | grep -oE '[0-9]+')
+                NAME="${arg#*=}"
+                ADCS[$PIN]=$NAME
+                ;;
         esac
     done
 else
@@ -92,18 +98,27 @@ else
     read -p "UART RX Pin: " RX
     read -p "UART TX Pin: " TX
 
+    # LED Config
     FIRST_LED=true
     while true; do
         read -p "Add LED on pin (or 0 to finish): " LPIN
         if [[ "$LPIN" == "0" || -z "$LPIN" ]]; then break; fi
         if [ "$FIRST_LED" = true ]; then
             echo -e "\n[*] Available system triggers:"
-            [ -d /sys/class/leds ] && cat /sys/class/leds/$(ls /sys/class/leds | head -n 1)/trigger
+            [ -d /sys/class/leds ] && ls /sys/class/leds | head -n 1 | xargs -I {} cat /sys/class/leds/{}/trigger
             echo -e "\n"
             FIRST_LED=false
         fi
         read -p "Trigger for LED $LPIN: " LTRIG
         LEDS[$LPIN]=${LTRIG:-none}
+    done
+
+    # ADC Config
+    while true; do
+        read -p "Add ADC on pin (e.g. 29, or 0 to finish): " APIN
+        if [[ "$APIN" == "0" || -z "$APIN" ]]; then break; fi
+        read -p "Name for ADC $APIN (e.g. battery): " ANAME
+        ADCS[$APIN]=${ANAME:-adc_raw_$APIN}
     done
 fi
 
@@ -117,6 +132,7 @@ apply_config() {
         echo "uart $RX $TX" > "$DEV_NODE"
         sleep 0.2
     fi
+    # Apply LEDS
     for PIN in "${!LEDS[@]}"; do
         echo "led $PIN" > "$DEV_NODE"
         for i in {1..10}; do
@@ -124,6 +140,11 @@ apply_config() {
             sleep 0.1
         done
         [ "${LEDS[$PIN]}" != "none" ] && echo "${LEDS[$PIN]}" > "/sys/class/leds/picolink_led_$PIN/trigger" 2>/dev/null
+    done
+    # Apply ADCS
+    for PIN in "${!ADCS[@]}"; do
+        echo "adc$PIN ${ADCS[$PIN]}" > "$DEV_NODE"
+        sleep 0.1
     done
 }
 
@@ -148,14 +169,20 @@ for i in {1..20}; do [ -e "$DEV_NODE" ] && break; sleep 0.1; done
 [[ "$SCL" != "0" && -n "$SCL" ]] && echo "i2c $SCL $SDA" > "$DEV_NODE"
 [[ "$RX" != "0" && -n "$RX" ]] && echo "uart $RX $TX" > "$DEV_NODE"
 EOF
+    # LEDs to persist script
     for PIN in "${!LEDS[@]}"; do
         echo "echo \"led $PIN\" > $DEV_NODE" >> "$PERSIST_CONFIG_SCRIPT"
         echo "sleep 0.5" >> "$PERSIST_CONFIG_SCRIPT"
         [[ "${LEDS[$PIN]}" != "none" ]] && echo "echo \"${LEDS[$PIN]}\" > /sys/class/leds/picolink_led_$PIN/trigger" >> "$PERSIST_CONFIG_SCRIPT"
     done
+    # ADCs to persist script
+    for PIN in "${!ADCS[@]}"; do
+        echo "echo \"adc$PIN ${ADCS[$PIN]}\" > $DEV_NODE" >> "$PERSIST_CONFIG_SCRIPT"
+    done
+    
     chmod +x "$PERSIST_CONFIG_SCRIPT"
 
-    # c. Create Systemd Service (Oneshot without RemainAfterExit for multi-trigger)
+    # c. Create Systemd Service
     cat <<EOF > "/etc/systemd/system/$SERVICE_NAME"
 [Unit]
 Description=PicoLink MFD Hot-plug Configurator
@@ -170,20 +197,29 @@ WantedBy=multi-user.target
 EOF
 
     # d. Create Udev Rule
-    # ACTION=="add" ensures it triggers only on plug-in
     echo "SUBSYSTEM==\"usb\", ACTION==\"add\", ATTR{idVendor}==\"1d50\", ATTR{idProduct}==\"6150\", TAG+=\"systemd\", ENV{SYSTEMD_WANTS}=\"$SERVICE_NAME\"" > "$UDEV_RULE_FILE"
     
     systemctl daemon-reload
     udevadm control --reload-rules
     echo "[+] Persistence installed! Configuration will trigger every time the Pico is connected."
-    echo "To reconfigure, simply run this script again."
 fi
 
 # 8. Summary
 echo -e "\n--- PicoLink System Status ---"
 i2cdetect -l | grep "Pico" || echo "I2C: Not activated"
+ls -lh /dev/ttyPico0 
+ls -lh /dev/picolink 
 for PIN in "${!LEDS[@]}"; do
     T=$(cat "/sys/class/leds/picolink_led_$PIN/trigger" 2>/dev/null | grep -o '\[.*\]')
     echo "LED $PIN: $T"
+done
+for PIN in "${!ADCS[@]}"; do
+    H_PATH=$(grep -l "${ADCS[$PIN]}" /sys/class/hwmon/hwmon*/name 2>/dev/null | sed 's/name//')
+    if [ -n "$H_PATH" ]; then
+        VAL=$(cat "${H_PATH}value" 2>/dev/null)
+        echo "ADC $PIN (${ADCS[$PIN]}): Raw Value = $VAL"
+    else
+        echo "ADC $PIN (${ADCS[$PIN]}): Device not found in hwmon"
+    fi
 done
 echo "--- Configuration Complete ---"
