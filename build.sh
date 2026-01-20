@@ -51,6 +51,7 @@ if [ -d "$FIRMWARE_DIR" ]; then
     cd "$FIRMWARE_DIR/build"
     
     cmake -DPICO_SDK_PATH="$PICO_SDK_PATH" ..
+    make clean
     make -j$(nproc)
     
     if [ $? -eq 0 ]; then
@@ -71,6 +72,7 @@ cd "$KERNEL_DIR"
 mkdir -p "$KERNEL_DIR/build"
 
 # Using the specific command requested
+make clean
 make -j$(nproc) -C /lib/modules/$(uname -r)/build M="$(pwd)/build" src="$(pwd)" modules
 
 if [ $? -eq 0 ]; then
