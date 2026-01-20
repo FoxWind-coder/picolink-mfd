@@ -1,5 +1,5 @@
 # makefile
-picolink_mfd-y := core.o mfd-gpio.o mfd-i2c.o mfd-uart.o
+picolink_mfd-y := core.o mfd-gpio.o mfd-i2c.o mfd-uart.o mfd-adc.o
 obj-m += picolink_mfd.o
 
 KDIR := /lib/modules/$(shell uname -r)/build

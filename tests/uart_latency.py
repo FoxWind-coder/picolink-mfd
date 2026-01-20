@@ -5,7 +5,7 @@ import sys
 # Настройки портов
 PICO_PORT = '/dev/ttyPico0'
 USB_PORT = '/dev/ttyUSB0'
-BAUD = 256000 # Вернул вашу скорость из лога strace
+BAUD = 500000 # Вернул вашу скорость из лога strace
 
 try:
     s_out = serial.Serial(PICO_PORT, BAUD, timeout=0)

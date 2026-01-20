@@ -7,10 +7,14 @@
 #include <linux/uaccess.h>
 #include <linux/tty.h>
 #include <linux/leds.h>
+#include <linux/hwmon.h>
 #include "picolink.h"
+#include "mfd-adc.h"
 
 static LIST_HEAD(picolink_leds_list);
+static LIST_HEAD(picolink_adcs_list);
 static DEFINE_MUTEX(leds_lock);
+static DEFINE_MUTEX(adcs_lock);
 
 struct picolink_led {
     struct led_classdev cdev;
@@ -24,6 +28,7 @@ struct picolink_led {
 extern struct platform_driver picolink_gpio_driver;
 extern struct platform_driver picolink_i2c_driver;
 extern struct platform_driver picolink_uart_driver;
+extern struct platform_driver picolink_adc_driver;
 
 extern struct picolink_uart *uart_instance;
 
@@ -36,6 +41,7 @@ static struct mfd_cell picolink_cells[] = {
     { .name = "picolink-gpio" },
     { .name = "picolink-i2c"  },
     { .name = "picolink-uart" },
+    { .name = "picolink-adc"  },
 };
 
 static void picolink_led_urb_complete(struct urb *urb) {
@@ -143,8 +149,11 @@ static void picolink_bulk_in_callback(struct urb *urb) {
                 picolink_uart_push_data(pkt->payload, len);
             }
         } 
-        // Sync responses for I2C / GPIO
+        // Sync responses for I2C / GPIO / ADC
         else if (pkt->header.iface_idx == IFACE_I2C || pkt->header.iface_idx == IFACE_GPIO) {
+            memcpy(&dev->i2c_resp, pkt, sizeof(usb_packet_t));
+            complete(&dev->i2c_done);
+        }else if (pkt->header.iface_idx == IFACE_ADC) {
             memcpy(&dev->i2c_resp, pkt, sizeof(usb_packet_t));
             complete(&dev->i2c_done);
         }
@@ -305,6 +314,46 @@ static ssize_t picolink_dev_write(struct file *file, const char __user *buf, siz
         pkt->header.type = CMD_TYPE_DISABLE;
         pkt->header.iface_idx = IFACE_UART;
         picolink_send_packet(dev->udev, dev->bulk_out_endpointAddr, pkt, sizeof(*pkt));
+    } else if (strncmp(kbuf, "adc", 3) == 0) {
+        int pin;
+        char adc_name[32];
+        
+        if (strstr(kbuf, "disable")) {
+            if (sscanf(kbuf, "adc%d disable", &pin) == 1) {
+                struct picolink_adc_chan *achan, *tmp;
+                mutex_lock(&adcs_lock);
+                list_for_each_entry_safe(achan, tmp, &picolink_adcs_list, node) {
+                    if (achan->pin == (uint8_t)pin) {
+                        hwmon_device_unregister(achan->hwmon_dev);
+                        list_del(&achan->node);
+                        kfree(achan);
+                        dev_info(&dev->udev->dev, "ADC pin %d disabled\n", pin);
+                    }
+                }
+                mutex_unlock(&adcs_lock);
+            }
+        } else if (sscanf(kbuf, "adc%d %31s", &pin, adc_name) == 2) {
+            struct picolink_adc_chan *achan = kzalloc(sizeof(*achan), GFP_KERNEL);
+            if (!achan) return -ENOMEM;
+
+            achan->mfd = dev;
+            achan->pin = (uint8_t)pin;
+            strncpy(achan->name, adc_name, 31);
+
+            // Регистрация в hwmon
+            achan->hwmon_dev = hwmon_device_register_with_groups(&dev->udev->dev, 
+                                achan->name, achan, picolink_adc_groups);
+            
+            if (IS_ERR(achan->hwmon_dev)) {
+                kfree(achan);
+                return PTR_ERR(achan->hwmon_dev);
+            }
+
+            mutex_lock(&adcs_lock);
+            list_add(&achan->node, &picolink_adcs_list);
+            mutex_unlock(&adcs_lock);
+            dev_info(&dev->udev->dev, "ADC pin %d enabled as %s\n", pin, adc_name);
+        }
     }
 
     kfree(pkt);
@@ -437,6 +486,7 @@ err_put:
 static void picolink_disconnect(struct usb_interface *interface) {
     struct picolink_dev *dev = usb_get_intfdata(interface);
     struct picolink_led *pled, *tmp;
+    struct picolink_adc_chan *achan, *atmp;
     
     if (!dev)
         return;
@@ -459,6 +509,16 @@ static void picolink_disconnect(struct usb_interface *interface) {
         }
     }
     mutex_unlock(&leds_lock);
+
+    mutex_lock(&adcs_lock);
+    list_for_each_entry_safe(achan, atmp, &picolink_adcs_list, node) {
+        if (achan->mfd == dev) {
+            hwmon_device_unregister(achan->hwmon_dev); // Удаляем из /sys/class/hwmon
+            list_del(&achan->node);
+            kfree(achan);
+        }
+    }
+    mutex_unlock(&adcs_lock);
 
     // 4. Remove child MFD devices (UART, I2C, GPIO)
     // This will trigger their platform-driver remove() methods
@@ -519,10 +579,12 @@ static int __init picolink_init(void) {
     ret = platform_driver_register(&picolink_uart_driver);
     if (ret) goto err_uart;
 
-    // 5. Register USB driver (triggers MFD cell creation)
-    ret = usb_register(&picolink_driver);
+    ret = platform_driver_register(&picolink_adc_driver);
+    if (ret) goto err_adc;
 
-    return 0;
+    // 5. Register USB driver (triggers MFD cell creation)
+    // ret = usb_register(&picolink_driver);
+    return usb_register(&picolink_driver);
 
 err_uart:
     platform_driver_unregister(&picolink_uart_driver);
@@ -530,6 +592,8 @@ err_i2c:
     platform_driver_unregister(&picolink_i2c_driver);
 err_gpio:
     platform_driver_unregister(&picolink_gpio_driver);
+err_adc:
+    platform_driver_unregister(&picolink_adc_driver);
 err_tty:
     picolink_tty_exit();
     return ret;
@@ -541,6 +605,7 @@ static void __exit picolink_exit(void) {
     platform_driver_unregister(&picolink_uart_driver);
     platform_driver_unregister(&picolink_i2c_driver);
     platform_driver_unregister(&picolink_gpio_driver);
+    platform_driver_unregister(&picolink_adc_driver);
     picolink_tty_exit();
 }
 
