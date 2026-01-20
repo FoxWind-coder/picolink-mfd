@@ -3,6 +3,7 @@
 
 #include "protocol.h"
 
+void picolink_uart_disable(void);
 void picolink_uart_handle(usb_packet_t *pkt);
 
 //uart irq handler
