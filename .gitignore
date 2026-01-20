@@ -1,0 +1,9 @@
+picolink-mfd/build/
+picolink-mfd/firmware/build/
+build
+.vscode
+picolink-mfd/kernel/*.mod
+picolink-mfd/kernel/*.o
+picolink-mfd/kernel/*.cmd
+picolink-mfd/kernel/*.d
+
