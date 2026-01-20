@@ -52,7 +52,10 @@ static void picolink_led_set_brightness(struct led_classdev *led_cdev,
     struct urb *urb;
     int ret;
 
-    // Use GFP_ATOMIC as this might be called from atomic context
+    // FIX 1: Check if device is still alive
+    if (!dev || dev->disconnected)
+        return;
+
     pkt = kzalloc(sizeof(*pkt), GFP_ATOMIC);
     if (!pkt) return;
 
@@ -75,7 +78,9 @@ static void picolink_led_set_brightness(struct led_classdev *led_cdev,
 
     ret = usb_submit_urb(urb, GFP_ATOMIC);
     if (ret) {
-        dev_err(&dev->udev->dev, "Failed to submit LED URB: %d\n", ret);
+        // If device was unplugged during submission, it's expected now
+        if (ret != -ENODEV && ret != -ESHUTDOWN)
+            dev_err(&dev->udev->dev, "Failed to submit LED URB: %d\n", ret);
         usb_free_urb(urb);
         kfree(pkt);
     }
@@ -433,25 +438,53 @@ static void picolink_disconnect(struct usb_interface *interface) {
     struct picolink_dev *dev = usb_get_intfdata(interface);
     struct picolink_led *pled, *tmp;
     
-    if (dev) {
-        mutex_lock(&leds_lock);
-        list_for_each_entry_safe(pled, tmp, &picolink_leds_list, node) {
+    if (!dev)
+        return;
+
+    // 1. Mark as disconnected immediately to block new URBs
+    dev->disconnected = true;
+
+    // 2. Kill the main reader URB first
+    if (dev->read_urb)
+        usb_kill_urb(dev->read_urb);
+
+    // 3. Unregister LEDs while mutex is held
+    mutex_lock(&leds_lock);
+    list_for_each_entry_safe(pled, tmp, &picolink_leds_list, node) {
+        // Only unregister LEDs belonging to THIS device instance
+        if (pled->mfd == dev) {
             led_classdev_unregister(&pled->cdev);
             list_del(&pled->node);
             kfree(pled);
         }
-        mutex_unlock(&leds_lock);
-
-        usb_kill_urb(dev->read_urb);
-        mfd_remove_devices(&interface->dev);
-        misc_deregister(&dev->miscdev);
-        usb_free_urb(dev->read_urb);
-        kfree(dev->bulk_in_buffer);
-        usb_put_dev(dev->udev);
-        kfree(dev);
     }
+    mutex_unlock(&leds_lock);
 
-    dev_info(&interface->dev, "PicoLink MFD: Disconnected\n");
+    // 4. Remove child MFD devices (UART, I2C, GPIO)
+    // This will trigger their platform-driver remove() methods
+    mfd_remove_devices(&interface->dev);
+
+    // 5. Unregister the control node /dev/picolink
+    misc_deregister(&dev->miscdev);
+
+    // 6. Final cleanup of device resources
+    usb_set_intfdata(interface, NULL);
+    
+    if (dev->read_urb)
+        usb_free_urb(dev->read_urb);
+    
+    kfree(dev->bulk_in_buffer);
+    
+    // Release USB reference
+    if (dev->udev)
+        usb_put_dev(dev->udev);
+
+    // Complete any pending transfers that might be waiting on i2c_done
+    complete_all(&dev->i2c_done);
+
+    kfree(dev);
+
+    dev_info(&interface->dev, "PicoLink MFD: Disconnected safely\n");
 }
 
 static const struct usb_device_id picolink_table[] = {

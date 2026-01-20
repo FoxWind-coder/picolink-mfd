@@ -16,6 +16,9 @@ static int picolink_i2c_usb_xfer(struct picolink_i2c *pi2c, struct i2c_msg *msg)
     usb_packet_t *pkt_out, *pkt_in;
     int ret;
     
+    if (!mfd_core || mfd_core->disconnected)
+        return -ENODEV;
+
     pkt_out = kzalloc(sizeof(*pkt_out), GFP_KERNEL);
     pkt_in = kzalloc(sizeof(*pkt_in), GFP_KERNEL);
     if (!pkt_out || !pkt_in) {

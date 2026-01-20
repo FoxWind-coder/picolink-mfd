@@ -19,6 +19,7 @@ struct picolink_dev {
     void *bulk_in_buffer;
     usb_packet_t i2c_resp;     // Buffer for the response
     struct completion i2c_done; // Signal that the response has been received
+    bool disconnected;
 };
 
 struct picolink_uart {

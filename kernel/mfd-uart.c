@@ -45,7 +45,7 @@ static ssize_t p_uart_write(struct tty_struct *tty, const u8 *buf, size_t count)
     int len = count > 60 ? 60 : count;
 
     // CRITICAL CHECK
-    if (!pu || !pu->mfd || !pu->mfd->udev) {
+    if (!pu || !pu->mfd || pu->mfd->disconnected || !pu->mfd->udev) {
         pr_err("picolink-uart: Attempt to write to NULL device\n");
         return -ENODEV;
     }
@@ -88,7 +88,7 @@ static void p_uart_set_termios(struct tty_struct *tty, const struct ktermios *ol
     usb_packet_t *pkt;
     uart_config_t *cfg;
 
-    if (!pu || !pu->mfd || !pu->mfd->udev) return;
+    if (!pu || !pu->mfd || pu->mfd->disconnected || !pu->mfd->udev) return;
 
     // Allocate memory for URB and packet
     urb = usb_alloc_urb(0, GFP_ATOMIC);
@@ -166,7 +166,7 @@ static int picolink_uart_probe(struct platform_device *pdev) {
 
 // This function should be called by core.c when receiving RESP data from USB
 void picolink_uart_push_data(const u8 *data, size_t size) {
-    if (uart_instance) {
+    if (uart_instance && uart_instance->mfd && !uart_instance->mfd->disconnected) {
         tty_insert_flip_string(&uart_instance->port, data, size);
         tty_flip_buffer_push(&uart_instance->port);
     }
