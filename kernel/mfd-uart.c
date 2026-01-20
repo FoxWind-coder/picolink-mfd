@@ -32,10 +32,24 @@ static void p_uart_close(struct tty_struct *tty, struct file *filp) {
     tty_port_close(tty->port, tty, filp);
 }
 
+// static void p_uart_write_bulk_callback(struct urb *urb) {
+//     if (urb->transfer_buffer)
+//         kfree(urb->transfer_buffer);
+//     usb_free_urb(urb);
+// }
+
 static void p_uart_write_bulk_callback(struct urb *urb) {
+    struct picolink_uart *pu = urb->context;
+    
     if (urb->transfer_buffer)
         kfree(urb->transfer_buffer);
+    
     usb_free_urb(urb);
+    
+    if (pu) {
+        atomic_set(&pu->tx_busy, 0);
+        tty_port_tty_wakeup(&pu->port);
+    }
 }
 
 static ssize_t p_uart_write(struct tty_struct *tty, const u8 *buf, size_t count) {
@@ -50,12 +64,21 @@ static ssize_t p_uart_write(struct tty_struct *tty, const u8 *buf, size_t count)
         return -ENODEV;
     }
 
+    if (atomic_xchg(&pu->tx_busy, 1))
+        return 0; 
+
+    len = count > 60 ? 60 : count;
+
     urb = usb_alloc_urb(0, GFP_ATOMIC);
-    if (!urb) return 0;
+    if (!urb) {
+        atomic_set(&pu->tx_busy, 0);
+        return 0;
+    }
 
     pkt = kzalloc(sizeof(*pkt), GFP_ATOMIC);
     if (!pkt) {
         usb_free_urb(urb);
+        atomic_set(&pu->tx_busy, 0);
         return 0;
     }
 
@@ -67,11 +90,12 @@ static ssize_t p_uart_write(struct tty_struct *tty, const u8 *buf, size_t count)
     usb_fill_bulk_urb(urb, pu->mfd->udev,
                       usb_sndbulkpipe(pu->mfd->udev, pu->mfd->bulk_out_endpointAddr),
                       pkt, sizeof(*pkt),
-                      p_uart_write_bulk_callback, NULL);
+                      p_uart_write_bulk_callback, pu);
 
     if (usb_submit_urb(urb, GFP_ATOMIC)) {
         kfree(pkt);
         usb_free_urb(urb);
+        atomic_set(&pu->tx_busy, 0);
         return 0;
     }
 
@@ -79,7 +103,11 @@ static ssize_t p_uart_write(struct tty_struct *tty, const u8 *buf, size_t count)
 }
 
 static unsigned int p_uart_write_room(struct tty_struct *tty) {
-    return 64; // Size of USB packet buffer
+    struct picolink_uart *pu = tty->driver_data;
+    // busy check
+    if (atomic_read(&pu->tx_busy))
+        return 0;
+    return 64; 
 }
 
 static void p_uart_set_termios(struct tty_struct *tty, const struct ktermios *old) {

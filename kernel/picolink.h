@@ -28,6 +28,7 @@ struct picolink_uart {
     struct device *dev;
     uint8_t tx_pin;
     uint8_t rx_pin;
+    atomic_t tx_busy;
 };
 
 int picolink_send_packet(struct usb_device *udev, uint8_t endpoint, void *data, int len);
