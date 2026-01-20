@@ -13,10 +13,12 @@
 
 // Command types
 typedef enum {
-    CMD_TYPE_CONFIG = 0x01,
-    CMD_TYPE_DATA   = 0x02,
-    CMD_TYPE_READ   = 0x03, // Read request
-    CMD_TYPE_RESP   = 0x04  // Data response
+    CMD_TYPE_CONFIG  = 0x01,
+    CMD_TYPE_DATA    = 0x02,
+    CMD_TYPE_READ    = 0x03, // Request data from hardware
+    CMD_TYPE_RESP    = 0x04, // Response containing data
+    CMD_TYPE_LOG     = 0x05, // Debug messages from Pico
+    CMD_TYPE_DISABLE = 0x06  // Deactivate hardware interface
 } cmd_type_t;
 
 typedef enum {
@@ -51,14 +53,14 @@ typedef struct __attribute__((packed)) {
 } i2c_config_t;
 
 typedef struct __attribute__((packed)) {
-    uint8_t type;       
-    uint8_t iface_idx;  
-    uint16_t length;    
+    uint8_t type;       // Command type (cmd_type_t)
+    uint8_t iface_idx;  // Target interface (iface_type_t)
+    uint16_t length;    // Payload data length
 } picolink_header_t;
 
 typedef struct __attribute__((packed)) {
     picolink_header_t header;
-    uint8_t payload[60]; // 64 (total size) - 4 (header size)
+    uint8_t payload[60]; // 64 bytes total - 4 byte header
 } usb_packet_t;
 
 #endif

@@ -37,8 +37,7 @@ static int picolink_i2c_usb_xfer(struct picolink_i2c *pi2c, struct i2c_msg *msg)
         if (msg->len > 0) memcpy(&pkt_out->payload[1], msg->buf, msg->len);
     }
 
-    /* Use the common transfer function from core.c. 
-       It sends the packet and waits for completion via callback. */
+    /* Synchronous transfer: sends packet and waits for Pico response */
     ret = picolink_transfer(mfd_core, pkt_out, pkt_in);
 
     /* Analyze the transfer result */
@@ -50,7 +49,7 @@ static int picolink_i2c_usb_xfer(struct picolink_i2c *pi2c, struct i2c_msg *msg)
                 }
                 ret = 0; 
             } else {
-                ret = -ENXIO; /* NACK (device did not respond) */
+                ret = -ENXIO; /* NACK: device did not respond */
             }
         } else {
             ret = -EPROTO; 
@@ -87,8 +86,8 @@ static const struct i2c_algorithm picolink_i2c_algo = {
 static int picolink_i2c_probe(struct platform_device *pdev)
 {
     struct picolink_i2c *pi2c;
-    struct picolink_dev *mfd_core = dev_get_drvdata(pdev->dev.parent);
-    usb_packet_t *cfg_pkt;
+    // struct picolink_dev *mfd_core = dev_get_drvdata(pdev->dev.parent);
+    // usb_packet_t *cfg_pkt;
     int ret;
 
     pi2c = devm_kzalloc(&pdev->dev, sizeof(*pi2c), GFP_KERNEL);
@@ -106,17 +105,17 @@ static int picolink_i2c_probe(struct platform_device *pdev)
     ret = i2c_add_adapter(&pi2c->adap);
     if (ret) return ret;
 
-    msleep(100); 
-    cfg_pkt = kzalloc(sizeof(*cfg_pkt), GFP_KERNEL);
-    if (cfg_pkt) {
-        cfg_pkt->header.type = CMD_TYPE_CONFIG;
-        cfg_pkt->header.iface_idx = IFACE_I2C;
-        cfg_pkt->header.length = 2;
-        cfg_pkt->payload[0] = 4;
-        cfg_pkt->payload[1] = 5;
-        picolink_send_packet(mfd_core->udev, mfd_core->bulk_out_endpointAddr, cfg_pkt, sizeof(*cfg_pkt));
-        kfree(cfg_pkt);
-    }
+    // msleep(100); 
+    // cfg_pkt = kzalloc(sizeof(*cfg_pkt), GFP_KERNEL);
+    // if (cfg_pkt) {
+    //     cfg_pkt->header.type = CMD_TYPE_CONFIG;
+    //     cfg_pkt->header.iface_idx = IFACE_I2C;
+    //     cfg_pkt->header.length = 2;
+    //     cfg_pkt->payload[0] = 4;
+    //     cfg_pkt->payload[1] = 5;
+    //     picolink_send_packet(mfd_core->udev, mfd_core->bulk_out_endpointAddr, cfg_pkt, sizeof(*cfg_pkt));
+    //     kfree(cfg_pkt);
+    // }
     return 0;
 }
 
