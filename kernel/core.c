@@ -6,7 +6,19 @@
 #include <linux/miscdevice.h>
 #include <linux/uaccess.h>
 #include <linux/tty.h>
+#include <linux/leds.h>
 #include "picolink.h"
+
+static LIST_HEAD(picolink_leds_list);
+static DEFINE_MUTEX(leds_lock);
+
+struct picolink_led {
+    struct led_classdev cdev;
+    struct picolink_dev *mfd;
+    uint8_t pin;
+    char name[32];
+    struct list_head node; // List node for global LED tracking
+};
 
 // Reference to platform drivers defined in other files
 extern struct platform_driver picolink_gpio_driver;
@@ -25,6 +37,70 @@ static struct mfd_cell picolink_cells[] = {
     { .name = "picolink-i2c"  },
     { .name = "picolink-uart" },
 };
+
+static void picolink_led_urb_complete(struct urb *urb) {
+    // Release packet buffer and URB after transmission
+    kfree(urb->context); 
+    usb_free_urb(urb);
+}
+
+static void picolink_led_set_brightness(struct led_classdev *led_cdev,
+                                      enum led_brightness brightness) {
+    struct picolink_led *pled = container_of(led_cdev, struct picolink_led, cdev);
+    struct picolink_dev *dev = pled->mfd;
+    usb_packet_t *pkt;
+    struct urb *urb;
+    int ret;
+
+    // Use GFP_ATOMIC as this might be called from atomic context
+    pkt = kzalloc(sizeof(*pkt), GFP_ATOMIC);
+    if (!pkt) return;
+
+    urb = usb_alloc_urb(0, GFP_ATOMIC);
+    if (!urb) {
+        kfree(pkt);
+        return;
+    }
+
+    pkt->header.type = CMD_TYPE_DATA;
+    pkt->header.iface_idx = IFACE_PWM;
+    pkt->header.length = 2;
+    pkt->payload[0] = pled->pin;
+    pkt->payload[1] = (uint8_t)brightness;
+
+    usb_fill_bulk_urb(urb, dev->udev,
+                      usb_sndbulkpipe(dev->udev, dev->bulk_out_endpointAddr),
+                      pkt, sizeof(*pkt),
+                      picolink_led_urb_complete, pkt);
+
+    ret = usb_submit_urb(urb, GFP_ATOMIC);
+    if (ret) {
+        dev_err(&dev->udev->dev, "Failed to submit LED URB: %d\n", ret);
+        usb_free_urb(urb);
+        kfree(pkt);
+    }
+}
+
+static ssize_t disable_store(struct device *dev, struct device_attribute *attr,
+                           const char *buf, size_t count) {
+    struct led_classdev *led_cdev = dev_get_drvdata(dev);
+    struct picolink_led *pled = container_of(led_cdev, struct picolink_led, cdev);
+    int val;
+
+    if (kstrtoint(buf, 10, &val) == 0 && val == 1) {
+        dev_info(dev, "LED on pin %d disabled\n", pled->pin);
+        led_classdev_unregister(&pled->cdev);
+        kfree(pled);
+    }
+    return count;
+}
+static DEVICE_ATTR_WO(disable);
+
+static struct attribute *picolink_led_attrs[] = {
+    &dev_attr_disable.attr,
+    NULL,
+};
+ATTRIBUTE_GROUPS(picolink_led);
 
 // Handle incoming data from Pico
 static void picolink_bulk_in_callback(struct urb *urb) {
@@ -47,25 +123,29 @@ static void picolink_bulk_in_callback(struct urb *urb) {
     // Check if we received at least the header
     if (urb->actual_length >= sizeof(picolink_header_t)) {
         len = pkt->header.length;
-        
-        // Overflow protection: data length cannot exceed packet payload size
         if (len > 60) len = 60; 
 
-        // Handle UART interface packets
-        if (pkt->header.iface_idx == IFACE_UART) {
-            // RESP type is typically used for data from Pico UART to PC
+        // Forward Pico logs to dmesg
+        if (pkt->header.type == CMD_TYPE_LOG) {
+            char log_msg[61];
+            memcpy(log_msg, pkt->payload, len);
+            log_msg[len] = '\0';
+            dev_info(&dev->udev->dev, "Pico: %s\n", log_msg);
+        } 
+        // UART Data handling
+        else if (pkt->header.iface_idx == IFACE_UART) {
             if (pkt->header.type == CMD_TYPE_RESP || pkt->header.type == CMD_TYPE_DATA) {
                 picolink_uart_push_data(pkt->payload, len);
             }
-        } else if (pkt->header.iface_idx == IFACE_I2C || pkt->header.iface_idx == IFACE_GPIO) {
-            // Copy response to device structure and wake up waiting thread
+        } 
+        // Sync responses for I2C / GPIO
+        else if (pkt->header.iface_idx == IFACE_I2C || pkt->header.iface_idx == IFACE_GPIO) {
             memcpy(&dev->i2c_resp, pkt, sizeof(usb_packet_t));
             complete(&dev->i2c_done);
         }
     }
 
 resubmit:
-    // URB resubmission is critical for continuous reading
     if (usb_submit_urb(dev->read_urb, GFP_ATOMIC)) {
         dev_err(&dev->udev->dev, "Failed to resubmit read urb\n");
     }
@@ -81,57 +161,148 @@ EXPORT_SYMBOL_GPL(picolink_send_packet);
 
 // Handler for /dev/picolink writes
 static ssize_t picolink_dev_write(struct file *file, const char __user *buf, size_t count, loff_t *ppos) {
-    struct miscdevice *mdev = file->private_data;
-    struct picolink_dev *dev = container_of(mdev, struct picolink_dev, miscdev);
-    char kbuf[32];
-    int sda, scl;
-    int tx, rx;
+    // struct miscdevice *mdev = file->private_data;
+    // struct picolink_dev *dev = container_of(mdev, struct picolink_dev, miscdev);
+    struct picolink_dev *dev = file->private_data;
+    char kbuf[64];
+    int sda, scl, tx, rx;
     usb_packet_t *pkt;
+    int led_pin;
+
+    if (!dev) return -EIO;
+
+    // dev_info(&dev->udev->dev, "picolink_write called: count=%zu\n", count);
+    pr_info("picolink: write called, count=%zu\n", count);
 
     if (count == 0) return 0;
     if (count >= sizeof(kbuf)) count = sizeof(kbuf) - 1;
-    
     if (copy_from_user(kbuf, buf, count)) return -EFAULT;
     kbuf[count] = '\0';
 
-    if (sscanf(kbuf, "i2c %d %d", &sda, &scl) == 2) {
-        pkt = kzalloc(sizeof(*pkt), GFP_KERNEL);
-        if (!pkt) return -ENOMEM;
+    pkt = kzalloc(sizeof(*pkt), GFP_KERNEL);
+    if (!pkt) return -ENOMEM;
 
+    if (strncmp(kbuf, "led ", 4) == 0) {
+        // Handle LED removal
+        if (strstr(kbuf, "disable")) {
+            if (sscanf(kbuf, "led %d disable", &led_pin) == 1) {
+                struct picolink_led *pled, *tmp;
+                bool found = false;
+
+                mutex_lock(&leds_lock);
+                list_for_each_entry_safe(pled, tmp, &picolink_leds_list, node) {
+                    if (pled->pin == (uint8_t)led_pin) {
+                        led_classdev_unregister(&pled->cdev);
+                        list_del(&pled->node);
+                        kfree(pled);
+                        found = true;
+                        break;
+                    }
+                }
+                mutex_unlock(&leds_lock);
+                
+                if (found) {
+                    dev_info(&dev->udev->dev, "LED on pin %d removed\n", led_pin);
+                } else {
+                    dev_warn(&dev->udev->dev, "LED on pin %d not found for disable\n", led_pin);
+                }
+            }
+        } else {
+            // Handle LED creation
+            if (sscanf(kbuf, "led %d", &led_pin) == 1) {
+                struct picolink_led *curr_led;
+                bool exists = false;
+
+                mutex_lock(&leds_lock);
+                list_for_each_entry(curr_led, &picolink_leds_list, node) {
+                    if (curr_led->pin == (uint8_t)led_pin) {
+                        exists = true;
+                        break;
+                    }
+                }
+                mutex_unlock(&leds_lock);
+
+                if (exists) {
+                    dev_warn(&dev->udev->dev, "LED on pin %d already exists\n", led_pin);
+                } else {
+                    struct picolink_led *pled = kzalloc(sizeof(*pled), GFP_KERNEL);
+                    if (!pled) { kfree(pkt); return -ENOMEM; }
+
+                    pled->mfd = dev;
+                    pled->pin = (uint8_t)led_pin;
+                    snprintf(pled->name, sizeof(pled->name), "picolink_led_%d", led_pin);
+                    
+                    pled->cdev.name = pled->name;
+                    pled->cdev.brightness_set = picolink_led_set_brightness;
+                    pled->cdev.max_brightness = 255;
+                    pled->cdev.groups = picolink_led_groups;
+
+                    mutex_lock(&leds_lock);
+                    list_add(&pled->node, &picolink_leds_list);
+                    mutex_unlock(&leds_lock);
+
+                    if (led_classdev_register(&dev->udev->dev, &pled->cdev) < 0) {
+                        mutex_lock(&leds_lock);
+                        list_del(&pled->node);
+                        mutex_unlock(&leds_lock);
+                        kfree(pled);
+                    } else {
+                        // Send configuration to Pico hardware
+                        pkt->header.type = CMD_TYPE_CONFIG;
+                        pkt->header.iface_idx = IFACE_PWM;
+                        pkt->header.length = 1;
+                        pkt->payload[0] = (uint8_t)led_pin;
+                        picolink_send_packet(dev->udev, dev->bulk_out_endpointAddr, pkt, sizeof(*pkt));
+                        dev_info(&dev->udev->dev, "Created LED device: /sys/class/leds/%s\n", pled->name);
+                    }
+                }
+            }
+        }
+        kfree(pkt);
+        return count;
+    }
+     else if (sscanf(kbuf, "i2c %d %d", &sda, &scl) == 2) {
         pkt->header.type = CMD_TYPE_CONFIG;
         pkt->header.iface_idx = IFACE_I2C;
         pkt->header.length = 2;
         pkt->payload[0] = (uint8_t)sda;
         pkt->payload[1] = (uint8_t)scl;
-
-        picolink_send_packet(dev->udev, dev->bulk_out_endpointAddr, pkt, sizeof(*pkt));
-        kfree(pkt);
-        dev_info(&dev->udev->dev, "Command sent: Set I2C SDA:%d SCL:%d\n", sda, scl);
-    } else if (sscanf(kbuf, "uart %d %d", &tx, &rx) == 2) {
-        pkt = kzalloc(sizeof(*pkt), GFP_KERNEL);
-        if (!pkt) return -ENOMEM;
-
+        int ret = picolink_send_packet(dev->udev, dev->bulk_out_endpointAddr, pkt, sizeof(*pkt));
+        dev_info(&dev->udev->dev, "I2C CFG Raw Send: ret=%d, type=%d, iface=%d\n", ret, pkt->header.type, pkt->header.iface_idx);
+        // picolink_send_packet(dev->udev, dev->bulk_out_endpointAddr, pkt, sizeof(*pkt));
+    } 
+    else if (strncmp(kbuf, "i2c disable", 11) == 0) {
+        pkt->header.type = CMD_TYPE_DISABLE;
+        pkt->header.iface_idx = IFACE_I2C;
+        int ret = picolink_send_packet(dev->udev, dev->bulk_out_endpointAddr, pkt, sizeof(*pkt));
+        dev_info(&dev->udev->dev, "I2C CFG Raw Send: ret=%d, type=%d, iface=%d\n", ret, pkt->header.type, pkt->header.iface_idx);
+    }
+    // UART configuration or disable
+    else if (sscanf(kbuf, "uart %d %d", &tx, &rx) == 2) {
         pkt->header.type = CMD_TYPE_CONFIG;
         pkt->header.iface_idx = IFACE_UART;
         pkt->header.length = sizeof(uart_config_t);
-
         uart_config_t *ucfg = (uart_config_t *)pkt->payload;
-        ucfg->tx_pin = (uint8_t)tx;
+        ucfg->tx_pin = (uint8_t)tx; 
         ucfg->rx_pin = (uint8_t)rx;
-        ucfg->baudrate = 115200; // Default when changing pins
-        ucfg->databits = 8;
+        ucfg->baudrate = 115200; 
+        ucfg->databits = 8; 
         ucfg->stopbits = 1;
 
-        // Update local data in mfd-uart to prevent stty from overwriting them
+        int ret = picolink_send_packet(dev->udev, dev->bulk_out_endpointAddr, pkt, sizeof(*pkt));
+        dev_info(&dev->udev->dev, "UART CFG Send: TX=%d RX=%d, ret=%d\n", tx, rx, ret);
+        
         if (uart_instance) {
             uart_instance->tx_pin = (uint8_t)tx;
             uart_instance->rx_pin = (uint8_t)rx;
         }
-
+    } else if (strncmp(kbuf, "uart disable", 12) == 0) {
+        pkt->header.type = CMD_TYPE_DISABLE;
+        pkt->header.iface_idx = IFACE_UART;
         picolink_send_packet(dev->udev, dev->bulk_out_endpointAddr, pkt, sizeof(*pkt));
-        kfree(pkt);
-        dev_info(&dev->udev->dev, "UART pins changed: TX:%d RX:%d\n", tx, rx);
     }
+
+    kfree(pkt);
     return count;
 }
 
@@ -162,8 +333,21 @@ int picolink_transfer(struct picolink_dev *dev, usb_packet_t *tx_pkt, usb_packet
 }
 EXPORT_SYMBOL_GPL(picolink_transfer);
 
+static int picolink_dev_open(struct inode *inode, struct file *file) {
+    // Extract dev pointer via miscdevice struct
+    struct miscdevice *mdev = file->private_data;
+    struct picolink_dev *dev = container_of(mdev, struct picolink_dev, miscdev);
+    
+    // Set private_data so write() can access dev directly
+    file->private_data = dev; 
+    
+    if (!dev->udev) return -ENODEV;
+    return 0;
+}
+
 static const struct file_operations picolink_fops = {
     .owner = THIS_MODULE,
+    .open  = picolink_dev_open,
     .write = picolink_dev_write,
 };
 
@@ -216,6 +400,7 @@ static int picolink_probe(struct usb_interface *interface, const struct usb_devi
     dev->miscdev.name = "picolink";
     dev->miscdev.fops = &picolink_fops;
     dev->miscdev.parent = &interface->dev;
+    dev->miscdev.this_device = &interface->dev;
     ret = misc_register(&dev->miscdev);
     if (ret) goto err_free_urb;
 
@@ -246,8 +431,17 @@ err_put:
 
 static void picolink_disconnect(struct usb_interface *interface) {
     struct picolink_dev *dev = usb_get_intfdata(interface);
+    struct picolink_led *pled, *tmp;
     
     if (dev) {
+        mutex_lock(&leds_lock);
+        list_for_each_entry_safe(pled, tmp, &picolink_leds_list, node) {
+            led_classdev_unregister(&pled->cdev);
+            list_del(&pled->node);
+            kfree(pled);
+        }
+        mutex_unlock(&leds_lock);
+
         usb_kill_urb(dev->read_urb);
         mfd_remove_devices(&interface->dev);
         misc_deregister(&dev->miscdev);
