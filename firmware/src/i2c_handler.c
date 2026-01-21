@@ -88,6 +88,7 @@ void picolink_i2c_handle(usb_packet_t *pkt) {
             // Attempting a 1-byte read is a reliable way to probe on RP2040.
             uint8_t dummy;
             result = i2c_read_blocking(current_i2c, addr, &dummy, 1, false);
+            if (result >= 0) picolink_log("I2C: Found 0x%02x", addr);
         } else {
             // Standard data write
             result = i2c_write_blocking(current_i2c, addr, &pkt->payload[1], len, false);
@@ -99,7 +100,7 @@ void picolink_i2c_handle(usb_packet_t *pkt) {
         resp.header.iface_idx = IFACE_I2C;
         resp.header.length = (result >= 0) ? 1 : 0; 
 
-        if (result >= 0) picolink_log("I2C: Found 0x%02x", addr);
+        // if (result >= 0) picolink_log("I2C: Found 0x%02x", addr);
 
         mutex_enter_blocking(&usb_mutex);
         tud_vendor_write(&resp, sizeof(resp));

@@ -47,7 +47,7 @@ void picolink_log(const char *format, ...) {
  */
 void core1_entry() {
     usb_packet_t pkt;
-    picolink_log("PicoLink: Core 1 Executor Ready\n");
+    picolink_log("PicoLink: Core 1 Ready\n");
     
     while (1) {
         // Blocking wait for a packet from the USB core
@@ -108,7 +108,7 @@ void core1_entry() {
                 tud_vendor_write_flush();
                 mutex_exit(&usb_mutex);
                 
-                picolink_log("ADC RD: Pin %d = %d\n", pin, result);
+                // picolink_log("ADC RD: Pin %d = %d\n", pin, result);
             }
         }
 
@@ -132,7 +132,7 @@ void core1_entry() {
             else if (hdr->type == CMD_TYPE_DATA) {
                 uint8_t value = pkt.payload[1];
                 gpio_put(pin, value);
-                picolink_log("GPIO WR: Pin %d = %d\n", pin, value);
+                // picolink_log("GPIO WR: Pin %d = %d\n", pin, value);
             }
             else if (hdr->type == CMD_TYPE_READ) {
                 usb_packet_t resp_pkt;
@@ -147,7 +147,7 @@ void core1_entry() {
                 tud_vendor_write(&resp_pkt, sizeof(resp_pkt));
                 tud_vendor_write_flush();
                 mutex_exit(&usb_mutex);
-                picolink_log("GPIO RD: Pin %d is %d\n", pin, resp_pkt.payload[1]);
+                // picolink_log("GPIO RD: Pin %d is %d\n", pin, resp_pkt.payload[1]);
             }
         } 
 
