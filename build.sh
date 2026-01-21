@@ -73,7 +73,7 @@ mkdir -p "$KERNEL_DIR/build"
 
 # Using the specific command requested
 make clean
-make -j$(nproc) -C /lib/modules/$(uname -r)/build M="$(pwd)/build" src="$(pwd)" modules
+make -j$(nproc)
 
 if [ $? -eq 0 ]; then
     echo -e "${GREEN}Kernel module compiled successfully.${NC}"

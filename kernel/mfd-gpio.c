@@ -1,9 +1,18 @@
 #include <linux/module.h>
 #include <linux/gpio/driver.h>
 #include <linux/platform_device.h>
+#include <linux/version.h>
 #include <linux/slab.h>
 #include <linux/pinctrl/pinconf-generic.h>
 #include "picolink.h"
+
+#if KERNEL_VERSION(6, 11, 0) > LINUX_VERSION_CODE
+    #define REMOVE_RET_TYPE int
+    #define REMOVE_RET_VAL  0
+#else
+    #define REMOVE_RET_TYPE void
+    #define REMOVE_RET_VAL
+#endif
 
 struct picolink_gpio {
     struct platform_device *pdev;
@@ -165,7 +174,7 @@ static int picolink_gpio_probe(struct platform_device *pdev) {
     return 0;
 }
 
-static int picolink_gpio_remove(struct platform_device *pdev) { return 0; }
+static REMOVE_RET_TYPE picolink_gpio_remove(struct platform_device *pdev) { return REMOVE_RET_VAL; }
 
 struct platform_driver picolink_gpio_driver = {
     .driver = { .name = "picolink-gpio" },

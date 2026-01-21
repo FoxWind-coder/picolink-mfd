@@ -2,10 +2,19 @@
 #include <linux/module.h>
 #include <linux/platform_device.h>
 #include <linux/tty.h>
+#include <linux/version.h>
 #include <linux/tty_flip.h>
 #include <linux/slab.h>
 #include <linux/serial.h> // Added for driver operations
 #include "picolink.h"
+
+#if KERNEL_VERSION(6, 11, 0) > LINUX_VERSION_CODE
+    #define REMOVE_RET_TYPE int
+    #define REMOVE_RET_VAL  0
+#else
+    #define REMOVE_RET_TYPE void
+    #define REMOVE_RET_VAL
+#endif
 
 #define MAX_ACTIVE_URBS 4
 
@@ -212,7 +221,7 @@ void picolink_uart_push_data(const u8 *data, size_t size) {
 }
 EXPORT_SYMBOL_GPL(picolink_uart_push_data);
 
-static int picolink_uart_remove(struct platform_device *pdev) {
+static REMOVE_RET_TYPE picolink_uart_remove(struct platform_device *pdev) {
     struct picolink_uart *pu = platform_get_drvdata(pdev);
     
     if (pu) {
@@ -221,7 +230,7 @@ static int picolink_uart_remove(struct platform_device *pdev) {
         tty_port_destroy(&pu->port);
     }
     uart_instance = NULL;
-    return 0;
+    return REMOVE_RET_VAL;
 }
 
 struct platform_driver picolink_uart_driver = {

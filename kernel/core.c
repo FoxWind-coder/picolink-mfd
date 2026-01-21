@@ -1,4 +1,5 @@
 //core.c
+#include <linux/version.h>
 #include <linux/module.h>
 #include <linux/usb.h>
 #include <linux/mfd/core.h>
@@ -10,6 +11,14 @@
 #include <linux/hwmon.h>
 #include "picolink.h"
 #include "mfd-adc.h"
+
+#if KERNEL_VERSION(6, 11, 0) > LINUX_VERSION_CODE
+    #define REMOVE_RET_TYPE int
+    #define REMOVE_RET_VAL  0
+#else
+    #define REMOVE_RET_TYPE void
+    #define REMOVE_RET_VAL
+#endif
 
 static LIST_HEAD(picolink_leds_list);
 static LIST_HEAD(picolink_adcs_list);
@@ -340,7 +349,6 @@ static ssize_t picolink_dev_write(struct file *file, const char __user *buf, siz
             achan->pin = (uint8_t)pin;
             strncpy(achan->name, adc_name, 31);
 
-            // Регистрация в hwmon
             achan->hwmon_dev = hwmon_device_register_with_groups(&dev->udev->dev, 
                                 achan->name, achan, picolink_adc_groups);
             

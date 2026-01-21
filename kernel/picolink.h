@@ -7,7 +7,7 @@
 #include <linux/miscdevice.h>
 #include <linux/tty.h>
 #include <linux/completion.h>
-#include "../firmware/src/protocol.h"
+#include "firmware/src/protocol.h"
 
 struct picolink_dev {
     struct usb_device *udev;

@@ -1,9 +1,18 @@
 #include <linux/module.h>
 #include <linux/i2c.h>
 #include <linux/platform_device.h>
+#include <linux/version.h>
 #include <linux/slab.h>
 #include <linux/delay.h>
 #include "picolink.h"
+
+#if KERNEL_VERSION(6, 11, 0) > LINUX_VERSION_CODE
+    #define REMOVE_RET_TYPE int
+    #define REMOVE_RET_VAL  0
+#else
+    #define REMOVE_RET_TYPE void
+    #define REMOVE_RET_VAL
+#endif
 
 struct picolink_i2c {
     struct platform_device *pdev;
@@ -122,11 +131,11 @@ static int picolink_i2c_probe(struct platform_device *pdev)
     return 0;
 }
 
-static int picolink_i2c_remove(struct platform_device *pdev)
+static REMOVE_RET_TYPE picolink_i2c_remove(struct platform_device *pdev)
 {
     struct picolink_i2c *pi2c = platform_get_drvdata(pdev);
     if (pi2c) i2c_del_adapter(&pi2c->adap);
-    return 0;
+    return REMOVE_RET_VAL;
 }
 
 struct platform_driver picolink_i2c_driver = {
