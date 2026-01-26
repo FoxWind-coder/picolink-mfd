@@ -20,6 +20,9 @@ struct picolink_dev {
     usb_packet_t i2c_resp;     // Buffer for the response
     struct completion i2c_done; // Signal that the response has been received
     bool disconnected;
+    bool i2c_registered;
+    bool spi_registered;
+    bool uart_registered;
 };
 
 struct picolink_uart {

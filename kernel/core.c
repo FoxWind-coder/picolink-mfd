@@ -47,13 +47,17 @@ extern void picolink_tty_exit(void);
 extern void picolink_uart_push_data(const u8 *data, size_t size);
 
 /* MFD cells description */
-static struct mfd_cell picolink_cells[] = {
-    { .name = "picolink-gpio" },
-    { .name = "picolink-i2c"  },
-    { .name = "picolink-uart" },
-    { .name = "picolink-adc"  },
-    { .name = "picolink-spi"  },
-};
+// static struct mfd_cell picolink_cells[] = {
+//     { .name = "picolink-gpio" },
+//     { .name = "picolink-i2c"  },
+//     { .name = "picolink-uart" },
+//     { .name = "picolink-adc"  },
+//     { .name = "picolink-spi"  },
+// };
+
+static struct mfd_cell i2c_cell = { .name = "picolink-i2c" };
+static struct mfd_cell uart_cell = { .name = "picolink-uart" };
+static struct mfd_cell spi_cell = { .name = "picolink-spi" };
 
 static void picolink_led_urb_complete(struct urb *urb) {
     /* Release packet buffer and URB after transmission */
@@ -185,6 +189,22 @@ int picolink_send_packet(struct usb_device *udev, uint8_t endpoint, void *data, 
 }
 EXPORT_SYMBOL_GPL(picolink_send_packet);
 
+static int is_named_device(struct device *dev, void *data) {
+    const char *name = data;
+    return strcmp(dev_name(dev), name) == 0 || 
+           (dev->init_name && strcmp(dev->init_name, name) == 0) ||
+           strstr(dev_name(dev), name) != NULL;
+}
+
+static void picolink_remove_subdev(struct device *parent, const char *name) {
+    struct device *child = device_find_child(parent, (void *)name, is_named_device);
+    if (child) {
+        // platform_device_unregister удалит устройство
+        platform_device_unregister(to_platform_device(child));
+        put_device(child);
+    }
+}
+
 /* Handler for /dev/picolink writes */
 static ssize_t picolink_dev_write(struct file *file, const char __user *buf, size_t count, loff_t *ppos) {
     // struct miscdevice *mdev = file->private_data;
@@ -193,6 +213,7 @@ static ssize_t picolink_dev_write(struct file *file, const char __user *buf, siz
     char kbuf[64];
     int sda, scl, tx, rx;
     usb_packet_t *pkt;
+    int ret;
     int led_pin;
 
     if (!dev) return -EIO;
@@ -293,15 +314,25 @@ static ssize_t picolink_dev_write(struct file *file, const char __user *buf, siz
         pkt->header.length = 2;
         pkt->payload[0] = (uint8_t)sda;
         pkt->payload[1] = (uint8_t)scl;
-        int ret = picolink_send_packet(dev->udev, dev->bulk_out_endpointAddr, pkt, sizeof(*pkt));
-        dev_info(&dev->udev->dev, "I2C CFG Raw Send: ret=%d, type=%d, iface=%d\n", ret, pkt->header.type, pkt->header.iface_idx);
-        // picolink_send_packet(dev->udev, dev->bulk_out_endpointAddr, pkt, sizeof(*pkt));
-    } 
-    else if (strncmp(kbuf, "i2c disable", 11) == 0) {
+        
+        picolink_send_packet(dev->udev, dev->bulk_out_endpointAddr, pkt, sizeof(*pkt));
+        
+        if (!dev->i2c_registered) {
+            ret = mfd_add_devices(&dev->interface->dev, PLATFORM_DEVID_AUTO, &i2c_cell, 1, NULL, 0, NULL);
+            if (!ret) dev->i2c_registered = true;
+            dev_info(&dev->udev->dev, "I2C adapter registered on pins SDA:%d SCL:%d\n", sda, scl);
+        }
+    } else if (strncmp(kbuf, "i2c disable", 11) == 0) {
         pkt->header.type = CMD_TYPE_DISABLE;
         pkt->header.iface_idx = IFACE_I2C;
         int ret = picolink_send_packet(dev->udev, dev->bulk_out_endpointAddr, pkt, sizeof(*pkt));
         dev_info(&dev->udev->dev, "I2C CFG Raw Send: ret=%d, type=%d, iface=%d\n", ret, pkt->header.type, pkt->header.iface_idx);
+
+        if (dev->i2c_registered) {
+            picolink_remove_subdev(&dev->interface->dev, "picolink-i2c");
+            dev->i2c_registered = false;
+            dev_info(&dev->udev->dev, "I2C Device removed from system\n");
+        }
     }
     /* UART configuration or disable */
     else if (sscanf(kbuf, "uart %d %d", &tx, &rx) == 2) {
@@ -317,6 +348,11 @@ static ssize_t picolink_dev_write(struct file *file, const char __user *buf, siz
 
         int ret = picolink_send_packet(dev->udev, dev->bulk_out_endpointAddr, pkt, sizeof(*pkt));
         dev_info(&dev->udev->dev, "UART CFG Send: TX=%d RX=%d, ret=%d\n", tx, rx, ret);
+
+        if (!dev->uart_registered) {
+            ret = mfd_add_devices(&dev->interface->dev, PLATFORM_DEVID_AUTO, &uart_cell, 1, NULL, 0, NULL);
+            if (!ret) dev->uart_registered = true;
+        }
         
         if (uart_instance) {
             uart_instance->tx_pin = (uint8_t)tx;
@@ -326,6 +362,12 @@ static ssize_t picolink_dev_write(struct file *file, const char __user *buf, siz
         pkt->header.type = CMD_TYPE_DISABLE;
         pkt->header.iface_idx = IFACE_UART;
         picolink_send_packet(dev->udev, dev->bulk_out_endpointAddr, pkt, sizeof(*pkt));
+
+        if (dev->uart_registered) {
+            picolink_remove_subdev(&dev->interface->dev, "picolink-uart");
+            dev->uart_registered = false;
+            dev_info(&dev->udev->dev, "UART Device removed from system\n");
+        }
     } else if (strncmp(kbuf, "adc", 3) == 0) {
         int pin;
         char adc_name[32];
@@ -368,7 +410,7 @@ static ssize_t picolink_dev_write(struct file *file, const char __user *buf, siz
     } else if (strncmp(kbuf, "spi ", 4) == 0) {
         int sck, mosi, miso, cs_pin, cs_idx;
         
-        /* 1. Main bus config: "spi sck mosi miso" */
+        /* 1. Конфигурация шины */
         if (sscanf(kbuf, "spi %d %d %d", &sck, &mosi, &miso) == 3) {
             pkt->header.type = CMD_TYPE_CONFIG;
             pkt->header.iface_idx = IFACE_SPI;
@@ -378,52 +420,41 @@ static ssize_t picolink_dev_write(struct file *file, const char __user *buf, siz
             scfg->sck_pin = (uint8_t)sck;
             scfg->mosi_pin = (uint8_t)mosi;
             scfg->miso_pin = (uint8_t)miso;
-            scfg->baudrate = 1000000; /* 1MHz default */
+            scfg->baudrate = 1000000;
             memset(scfg->cs_pins, 0xFF, 4); 
             
             picolink_send_packet(dev->udev, dev->bulk_out_endpointAddr, pkt, sizeof(*pkt));
-            dev_info(&dev->udev->dev, "SPI Bus Configured: SCK:%d MOSI:%d MISO:%d\n", sck, mosi, miso);
-        }
-        /* 2. Adding CS (child device): "spi cs index pin" */
-        else if (sscanf(kbuf, "spi cs %d %d", &cs_idx, &cs_pin) == 2) {
-            if (cs_idx >= 0 && cs_idx < 4) {
-                /* Notify Pico about new CS pin */
-                pkt->header.type = CMD_TYPE_CONFIG;
-                pkt->header.iface_idx = IFACE_SPI;
-                pkt->header.length = sizeof(spi_config_t);
-                spi_config_t *scfg = (spi_config_t *)pkt->payload;
-                
-                /* Mark other pins as unchanged */
-                scfg->sck_pin = 0xFF; 
-                memset(scfg->cs_pins, 0xFF, 4);
-                scfg->cs_pins[cs_idx] = (uint8_t)cs_pin;
 
-                picolink_send_packet(dev->udev, dev->bulk_out_endpointAddr, pkt, sizeof(*pkt));
-                
-                /* Register in Linux */
-                extern int picolink_spi_add_device(struct picolink_dev *mfd, int index, int pin);
-                picolink_spi_add_device(dev, cs_idx, cs_pin);
-                
-                dev_info(&dev->udev->dev, "SPI: Sent CS%d (pin %d) config to Pico\n", cs_idx, cs_pin);
+            /* КРИТИЧЕСКОЕ ИСПРАВЛЕНИЕ: Регистрируем SPI контроллер в Linux */
+            if (!dev->spi_registered) {
+                ret = mfd_add_devices(&dev->interface->dev, PLATFORM_DEVID_AUTO, &spi_cell, 1, NULL, 0, NULL);
+                if (!ret) dev->spi_registered = true;
+                dev_info(&dev->udev->dev, "SPI controller registered (SCK:%d)\n", sck);
             }
         }
-        /* 3. Disable: "spi disable" or "spi cs index disable" */
-        else if (strstr(kbuf, "disable")) {
-             if (sscanf(kbuf, "spi cs %d disable", &cs_idx) == 1) {
-                 extern void picolink_spi_remove_device(int index);
-                 picolink_spi_remove_device(cs_idx);
-             } else {
-                 pkt->header.type = CMD_TYPE_DISABLE;
-                 pkt->header.iface_idx = IFACE_SPI;
-                 picolink_send_packet(dev->udev, dev->bulk_out_endpointAddr, pkt, sizeof(*pkt));
-                 dev_info(&dev->udev->dev, "SPI Bus Disabled\n");
-             }
+        /* 2. Добавление CS */
+        else if (sscanf(kbuf, "spi cs %d %d", &cs_idx, &cs_pin) == 2) {
+            /* Проверяем, зарегистрирован ли контроллер, прежде чем добавлять устройство */
+            if (!dev->spi_registered) {
+                dev_err(&dev->udev->dev, "Error: SPI bus must be configured before adding CS!\n");
+                kfree(pkt);
+                return -EINVAL;
+            }
+
+            if (cs_idx >= 0 && cs_idx < 4) {
+                // ... (ваш код подготовки pkt для CS) ...
+                picolink_send_packet(dev->udev, dev->bulk_out_endpointAddr, pkt, sizeof(*pkt));
+                
+                /* Теперь это безопасно, так как шина существует */
+                extern int picolink_spi_add_device(struct picolink_dev *mfd, int index, int pin);
+                picolink_spi_add_device(dev, cs_idx, cs_pin);
+            }
         }
     }
-
     kfree(pkt);
     return count;
 }
+
 
 int picolink_transfer(struct picolink_dev *dev, usb_packet_t *tx_pkt, usb_packet_t *rx_pkt) {
     int ret;
@@ -476,16 +507,17 @@ static int picolink_probe(struct usb_interface *interface, const struct usb_devi
     struct usb_endpoint_descriptor *endpoint;
     int i, ret;
 
+    static struct mfd_cell base_cells[] = {
+        { .name = "picolink-gpio" },
+        { .name = "picolink-adc"  },
+    };
+
     dev = kzalloc(sizeof(*dev), GFP_KERNEL);
     if (!dev) return -ENOMEM;
 
     dev->udev = usb_get_dev(interface_to_usbdev(interface));
     dev->interface = interface;
-
-    dev->miscdev.minor = MISC_DYNAMIC_MINOR;
-    dev->miscdev.name = "picolink";
-    dev->miscdev.fops = &picolink_fops;
-    dev->miscdev.parent = &interface->dev;
+    init_completion(&dev->i2c_done);
 
     /* Search for endpoints */
     iface_desc = interface->cur_altsetting;
@@ -532,23 +564,24 @@ static int picolink_probe(struct usb_interface *interface, const struct usb_devi
         goto err_free_urb;
     }
 
-    if (ret) {
-        dev_err(&interface->dev, "Failed to register misc dev, error %d.\n", ret);
-        goto err_free_urb;
-    }
+    ret = mfd_add_devices(&interface->dev, PLATFORM_DEVID_AUTO, base_cells, ARRAY_SIZE(base_cells), NULL, 0, NULL);
+    if (ret) goto err_misc;
+
+    // if (ret) {
+    //     dev_err(&interface->dev, "Failed to register misc dev, error %d.\n", ret);
+    //     goto err_free_misc;
+    // }
 
     /* Start USB listener */
     ret = usb_submit_urb(dev->read_urb, GFP_KERNEL);
     if (ret) goto err_misc;
 
     /* Register MFD cells */
-    ret = mfd_add_devices(&interface->dev, PLATFORM_DEVID_AUTO,
-                          picolink_cells, ARRAY_SIZE(picolink_cells),
-                          NULL, 0, NULL);
-    if (ret) goto err_misc;
+    // ret = mfd_add_devices(&interface->dev, PLATFORM_DEVID_AUTO,
+    //                       picolink_cells, ARRAY_SIZE(picolink_cells),
+    //                       NULL, 0, NULL);
 
-    dev_info(&interface->dev, "PicoLink MFD Ready (UART/I2C/GPIO)\n");
-    init_completion(&dev->i2c_done);
+    dev_info(&interface->dev, "PicoLink MFD Ready. Use /dev/picolink to configure I2C/SPI/UART\n");
     return 0;
 
 err_misc:
@@ -655,22 +688,25 @@ static int __init picolink_init(void) {
     if (ret) goto err_spi;
 
     ret = platform_driver_register(&picolink_adc_driver);
-    if (ret) goto err_adc;
+    if (ret) goto err_usb;
 
+    ret = usb_register(&picolink_driver);
+    if (ret) goto err_usb;
     /* 3. Register USB driver */
     // ret = usb_register(&picolink_driver);
-    return usb_register(&picolink_driver);
-
+    // return usb_register(&picolink_driver);
+    return 0;
+    
+err_usb:
+    platform_driver_unregister(&picolink_adc_driver);
+err_spi:
+    platform_driver_unregister(&picolink_spi_driver);
 err_uart:
     platform_driver_unregister(&picolink_uart_driver);
 err_i2c:
     platform_driver_unregister(&picolink_i2c_driver);
 err_gpio:
     platform_driver_unregister(&picolink_gpio_driver);
-err_adc:
-    platform_driver_unregister(&picolink_adc_driver);
-err_spi:
-    platform_driver_unregister(&picolink_spi_driver);
 err_tty:
     picolink_tty_exit();
     return ret;
