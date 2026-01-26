@@ -1,9 +1,9 @@
-//mfd-spi.c
+// mfd-spi.c
 #include <linux/spi/spi.h>
 #include <linux/platform_device.h>
 #include <linux/slab.h>
 #include <linux/version.h>
-#include <linux/property.h> // Важно для свойств
+#include <linux/property.h>
 #include "picolink.h"
 
 #if KERNEL_VERSION(6, 11, 0) > LINUX_VERSION_CODE
@@ -28,7 +28,8 @@ static int picolink_spi_setup(struct spi_device *spi)
     int ret;
 
     pkt = kzalloc(sizeof(*pkt), GFP_KERNEL);
-    if (!pkt) return -ENOMEM;
+    if (!pkt)
+        return -ENOMEM;
 
     scfg = (spi_config_t *)pkt->payload;
 
@@ -36,19 +37,15 @@ static int picolink_spi_setup(struct spi_device *spi)
     pkt->header.iface_idx = IFACE_SPI;
     pkt->header.length = sizeof(spi_config_t);
 
-    // Указываем 0xFF для пинов, чтобы прошивка Pico понимала: 
-    // пины менять не нужно, меняем только параметры протокола.
+    /* Use 0xFF for pins to tell Pico firmware not to change pin mapping */
     scfg->sck_pin = 0xFF;
     scfg->mosi_pin = 0xFF;
     scfg->miso_pin = 0xFF;
     memset(scfg->cs_pins, 0xFF, 4);
 
-    // Передаем актуальную частоту и режим
     scfg->baudrate = spi->max_speed_hz;
     
-    // В SPI mode: bit 0 = CPHA, bit 1 = CPOL
-    // Мы можем передать сырой mode, если прошивка Pico его понимает,
-    // либо разложить на флаги.
+    /* SPI mode: bit 0 = CPHA, bit 1 = CPOL */
     scfg->mode = (uint8_t)(spi->mode & (SPI_CPOL | SPI_CPHA));
 
     dev_info(&pspi->mfd->udev->dev, 
@@ -61,8 +58,7 @@ static int picolink_spi_setup(struct spi_device *spi)
 #endif
     );
 
-    // Отправляем пакет через основную функцию MFD
-    // Мы не ждем ответа (rx_pkt = NULL), так как это просто установка параметров
+    /* Send packet without waiting for response (rx_pkt = NULL) */
     ret = picolink_send_packet(pspi->mfd->udev, 
                                pspi->mfd->bulk_out_endpointAddr, 
                                pkt, sizeof(*pkt));
@@ -99,16 +95,15 @@ static int picolink_spi_transfer_one(struct spi_controller *ctlr, struct spi_dev
     pkt_out->header.iface_idx = IFACE_SPI;
     pkt_out->header.length = xfer->len + 1;
 
-    #if KERNEL_VERSION(6, 0, 0) <= LINUX_VERSION_CODE
-        pkt_out->payload[0] = (uint8_t)spi->chip_select[0];
-    #else
-        pkt_out->payload[0] = (uint8_t)spi->chip_select;
-    #endif
+#if KERNEL_VERSION(6, 0, 0) <= LINUX_VERSION_CODE
+    pkt_out->payload[0] = (uint8_t)spi->chip_select[0];
+#else
+    pkt_out->payload[0] = (uint8_t)spi->chip_select;
+#endif
     
     if (xfer->tx_buf)
         memcpy(&pkt_out->payload[1], xfer->tx_buf, xfer->len);
 
-    
     dev_info(&pspi->mfd->udev->dev, "SPI TX: len=%u, cs=%d, first_byte=0x%02x\n", 
             xfer->len, pkt_out->payload[0], pkt_out->payload[1]);
 
@@ -132,12 +127,6 @@ out:
 int picolink_spi_add_device(struct picolink_dev *mfd, int index, int pin)
 {
     struct spi_device *spi;
-
-    // const struct property_entry props[] = {
-    //     PROPERTY_ENTRY_STRING("compatible", "rohm,dh2228fv"), // Одно из имен, которое spidev знает
-    //     {},
-    // };
-    // Важно: на некоторых ядрах нужно явно инициализировать modalias и controller
     struct spi_board_info info = {
         .modalias = "spidev",
         .max_speed_hz = 1000000,
@@ -146,17 +135,19 @@ int picolink_spi_add_device(struct picolink_dev *mfd, int index, int pin)
         .mode = SPI_MODE_0,
     };
     
-    if (!g_spi || index < 0 || index > 3) return -EINVAL;
-    if (g_spi->cs_devs[index]) return -EBUSY;
+    if (!g_spi || index < 0 || index > 3) 
+        return -EINVAL;
+        
+    if (g_spi->cs_devs[index]) 
+        return -EBUSY;
 
     spi = spi_new_device(g_spi->ctlr, &info);
     if (!spi) {
         dev_err(&mfd->udev->dev, "SPI: Failed to create device\n");
         return -ENOMEM;
     }
-    // ХАК ДЛЯ АВТО-ПРИВЯЗКИ:
-    // Чтобы не делать echo spidev > driver_override вручную, 
-    // мы можем программно установить этот override прямо здесь.
+
+    /* Programmatically set driver override to allow automatic spidev binding */
     spi->driver_override = kstrdup("spidev", GFP_KERNEL);
 
     if (device_attach(&spi->dev) < 0) {
@@ -172,7 +163,8 @@ int picolink_spi_add_device(struct picolink_dev *mfd, int index, int pin)
 }
 EXPORT_SYMBOL_GPL(picolink_spi_add_device);
 
-void picolink_spi_remove_device(int index) {
+void picolink_spi_remove_device(int index)
+{
     if (index >= 0 && index < 4 && g_spi && g_spi->cs_devs[index]) {
         spi_unregister_device(g_spi->cs_devs[index]);
         g_spi->cs_devs[index] = NULL;
@@ -187,7 +179,8 @@ static int picolink_spi_probe(struct platform_device *pdev)
     int ret;
 
     ctlr = spi_alloc_master(&pdev->dev, sizeof(*pspi));
-    if (!ctlr) return -ENOMEM;
+    if (!ctlr)
+        return -ENOMEM;
 
     pspi = spi_controller_get_devdata(ctlr);
     pspi->ctlr = ctlr;
@@ -201,14 +194,9 @@ static int picolink_spi_probe(struct platform_device *pdev)
 
     ctlr->bus_num = -1; 
     ctlr->num_chipselect = 4;
-    
-    // ВАЖНО: Указываем поддерживаемые режимы
     ctlr->mode_bits = SPI_CPOL | SPI_CPHA | SPI_CS_HIGH | SPI_LSB_FIRST;
-    
-    // ВАЖНО: Добавляем эти коллбэки
     ctlr->setup = picolink_spi_setup;
     ctlr->transfer_one = picolink_spi_transfer_one;
-    
     ctlr->dev.of_node = pdev->dev.of_node;
 
     g_spi = pspi;
@@ -229,9 +217,12 @@ static REMOVE_RET_TYPE picolink_spi_remove(struct platform_device *pdev)
 {
     struct picolink_spi *pspi = platform_get_drvdata(pdev);
     int i;
+
     for (i = 0; i < 4; i++) {
-        if (pspi->cs_devs[i]) spi_unregister_device(pspi->cs_devs[i]);
+        if (pspi->cs_devs[i]) 
+            spi_unregister_device(pspi->cs_devs[i]);
     }
+
     spi_unregister_controller(pspi->ctlr);
     g_spi = NULL;
     return REMOVE_RET_VAL;

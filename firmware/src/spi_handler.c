@@ -40,7 +40,7 @@ void picolink_spi_handle(usb_packet_t *pkt) {
 
         if (cfg->sck_pin == 0xFF) {
             if (current_spi) {
-                // Обновляем скорость и формат на лету
+                /* Update baudrate and format on the fly */
                 spi_set_baudrate(current_spi, cfg->baudrate);
                 spi_set_format(current_spi, 8, 
                               (cfg->mode & 2) ? 1 : 0, 
@@ -49,7 +49,7 @@ void picolink_spi_handle(usb_packet_t *pkt) {
                 picolink_log("SPI: Reconfigured to %dHz, mode %d", cfg->baudrate, cfg->mode);
             }
 
-            // Обновляем пины CS, если они переданы (не 0xFF)
+            /* Update CS pins if they are provided (not 0xFF) */
             for (int i = 0; i < 4; i++) {
                 if (cfg->cs_pins[i] < 30) {
                     active_cs[i] = cfg->cs_pins[i];
@@ -62,7 +62,7 @@ void picolink_spi_handle(usb_packet_t *pkt) {
             return; 
         }
         
-        // Проверка валидности основных пинов через hardware_map
+        /* Validate main pins via hardware_map */
         uint8_t s1 = RP2040_PIN_MAP[cfg->sck_pin].spi_id;
         uint8_t s2 = RP2040_PIN_MAP[cfg->mosi_pin].spi_id;
         uint8_t s3 = RP2040_PIN_MAP[cfg->miso_pin].spi_id;
@@ -86,13 +86,15 @@ void picolink_spi_handle(usb_packet_t *pkt) {
         gpio_set_function(active_mosi, GPIO_FUNC_SPI);
         gpio_set_function(active_miso, GPIO_FUNC_SPI);
 
-        // Настройка CS пинов как обычных GPIO (Manual CS)
+        gpio_pull_up(active_miso);
+
+        /* Configure CS pins as regular GPIO (Manual CS) */
         for (int i = 0; i < 4; i++) {
             active_cs[i] = cfg->cs_pins[i];
             if (active_cs[i] < 30) {
                 gpio_init(active_cs[i]);
                 gpio_set_dir(active_cs[i], GPIO_OUT);
-                gpio_put(active_cs[i], 1); // High (Idle)
+                gpio_put(active_cs[i], 1); /* High (Idle) */
             }
         }
 
@@ -110,7 +112,7 @@ void picolink_spi_handle(usb_packet_t *pkt) {
         uint16_t data_len = hdr->length - 1;
 
         if (cs_idx < 4 && active_cs[cs_idx] < 30) {
-            gpio_put(active_cs[cs_idx], 0); // Select
+            gpio_put(active_cs[cs_idx], 0); /* Select */
             
             usb_packet_t resp;
             memset(&resp, 0, sizeof(resp));
@@ -118,20 +120,20 @@ void picolink_spi_handle(usb_packet_t *pkt) {
             resp.header.iface_idx = IFACE_SPI;
             resp.header.length = data_len;
 
-            // Логируем, что мы начали обмен
+            /* Log the start of the exchange */
             picolink_log("SPI: Xfer %d bytes, CS %d", data_len, cs_idx);
 
             spi_write_read_blocking(current_spi, data_ptr, resp.payload, data_len);
             
-            gpio_put(active_cs[cs_idx], 1); // Deselect
+            gpio_put(active_cs[cs_idx], 1); /* Deselect */
 
             mutex_enter_blocking(&usb_mutex);
-            // Прямая запись всего пакета (64 байта)
+            /* Direct write of the entire packet (64 bytes) */
             uint32_t written = tud_vendor_write(&resp, 64);
             tud_vendor_write_flush();
             mutex_exit(&usb_mutex);
             
-            // Если в dmesg не появится это сообщение, значит Pico зависла на spi_write_read
+            /* If this message doesn't appear in dmesg, Pico is stuck in spi_write_read */
             picolink_log("SPI: USB Write: %d", written); 
         } else {
              picolink_log("SPI ERR: Invalid CS %d", cs_idx);
