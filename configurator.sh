@@ -67,6 +67,10 @@ SCL=""
 SDA=""
 RX=""
 TX=""
+SCK=""
+MOSI=""
+MISO=""
+CS_PINS=""
 declare -A LEDS
 declare -A ADCS
 
@@ -78,6 +82,10 @@ if [ $# -gt 0 ]; then
             sda=*) SDA="${arg#*=}" ;;
             rx=*)  RX="${arg#*=}" ;;
             tx=*)  TX="${arg#*=}" ;;
+            sck=*) SCK="${arg#*=}" ;;
+            mosi=*) MOSI="${arg#*=}" ;;
+            miso=*) MISO="${arg#*=}" ;;
+            cs=*)  CS_PINS="${arg#*=}" ;; # Example: cs="10 11"
             led*=*) 
                 PIN=$(echo "${arg%=*}" | grep -oE '[0-9]+')
                 TRIGGER="${arg#*=}"
@@ -97,8 +105,15 @@ else
     read -p "I2C SDA Pin: " SDA
     read -p "UART RX Pin: " RX
     read -p "UART TX Pin: " TX
+    
+    echo -e "\n--- SPI Configuration ---"
+    read -p "SPI SCK Pin: " SCK
+    read -p "SPI MOSI Pin: " MOSI
+    read -p "SPI MISO Pin: " MISO
+    read -p "SPI CS Pins (space separated, max 4): " CS_PINS
 
     # LED Config
+    echo -e "\n--- LED Configuration ---"
     FIRST_LED=true
     while true; do
         read -p "Add LED on pin (or 0 to finish): " LPIN
@@ -114,8 +129,9 @@ else
     done
 
     # ADC Config
+    echo -e "\n--- ADC Configuration ---"
     while true; do
-        read -p "Add ADC on pin (e.g. 29, or 0 to finish): " APIN
+        read -p "Add ADC on pin (e.g. 26-28, or 0 to finish): " APIN
         if [[ "$APIN" == "0" || -z "$APIN" ]]; then break; fi
         read -p "Name for ADC $APIN (e.g. battery): " ANAME
         ADCS[$APIN]=${ANAME:-adc_raw_$APIN}
@@ -124,13 +140,31 @@ fi
 
 # 4-6. Apply Function
 apply_config() {
+    # I2C
     if [[ "$SCL" != "0" && -n "$SCL" ]]; then
         echo "i2c $SCL $SDA" > "$DEV_NODE"
         sleep 0.2
     fi
+    # UART
     if [[ "$RX" != "0" && -n "$RX" ]]; then
         echo "uart $RX $TX" > "$DEV_NODE"
         sleep 0.2
+    fi
+    # SPI Bus
+    if [[ "$SCK" != "0" && -n "$SCK" ]]; then
+        echo "spi $SCK $MOSI $MISO" > "$DEV_NODE"
+        sleep 0.2
+        # SPI CS
+        if [[ -n "$CS_PINS" ]]; then
+            idx=0
+            for cspin in $CS_PINS; do
+                if [ $idx -lt 4 ]; then
+                    echo "spi cs $idx $cspin" > "$DEV_NODE"
+                    sleep 0.1
+                    idx=$((idx+1))
+                fi
+            done
+        fi
     fi
     # Apply LEDS
     for PIN in "${!LEDS[@]}"; do
@@ -169,6 +203,17 @@ for i in {1..20}; do [ -e "$DEV_NODE" ] && break; sleep 0.1; done
 [[ "$SCL" != "0" && -n "$SCL" ]] && echo "i2c $SCL $SDA" > "$DEV_NODE"
 [[ "$RX" != "0" && -n "$RX" ]] && echo "uart $RX $TX" > "$DEV_NODE"
 EOF
+    # SPI to persist script
+    if [[ "$SCK" != "0" && -n "$SCK" ]]; then
+        echo "echo \"spi $SCK $MOSI $MISO\" > $DEV_NODE" >> "$PERSIST_CONFIG_SCRIPT"
+        idx=0
+        for cspin in $CS_PINS; do
+            if [ $idx -lt 4 ]; then
+                echo "echo \"spi cs $idx $cspin\" > $DEV_NODE" >> "$PERSIST_CONFIG_SCRIPT"
+                idx=$((idx+1))
+            fi
+        done
+    fi
     # LEDs to persist script
     for PIN in "${!LEDS[@]}"; do
         echo "echo \"led $PIN\" > $DEV_NODE" >> "$PERSIST_CONFIG_SCRIPT"
@@ -207,7 +252,8 @@ fi
 # 8. Summary
 echo -e "\n--- PicoLink System Status ---"
 i2cdetect -l | grep "Pico" || echo "I2C: Not activated"
-ls -lh /dev/ttyPico0 
+ls -lh /dev/ttyPico0 2>/dev/null || echo "UART: Not activated"
+ls -lh /dev/spidev* 2>/dev/null || echo "SPI: No devices found"
 ls -lh /dev/picolink 
 for PIN in "${!LEDS[@]}"; do
     T=$(cat "/sys/class/leds/picolink_led_$PIN/trigger" 2>/dev/null | grep -o '\[.*\]')
