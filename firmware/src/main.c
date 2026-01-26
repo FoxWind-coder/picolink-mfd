@@ -9,8 +9,10 @@
 #include "protocol.h"
 #include "i2c_handler.h"
 #include "uart_handler.h"
+#include "spi_handler.h"
 #include "hardware/pwm.h"
 #include "hardware/adc.h"
+#include "hardware/spi.h"
 
 // Mutex to protect USB stack access from concurrent cores
 mutex_t usb_mutex;
@@ -176,6 +178,15 @@ void core1_entry() {
                 gpio_set_function(pin, GPIO_FUNC_SIO);
                 picolink_log("PWM/LED Released: GP%d\n", pin);
             }
+        }
+        
+        else if (hdr->iface_idx == IFACE_SPI) {
+            if (hdr->type == CMD_TYPE_DISABLE) {
+                picolink_spi_disable();
+            } else {
+                picolink_spi_handle(&pkt);
+            }
+            continue;
         }
     }
 }

@@ -491,6 +491,7 @@ static int picolink_probe(struct usb_interface *interface, const struct usb_devi
     dev->miscdev.minor = MISC_DYNAMIC_MINOR;
     dev->miscdev.name = "picolink";
     dev->miscdev.fops = &picolink_fops;
+    dev->miscdev.parent = &interface->dev;
 
     // Search for endpoints
     iface_desc = interface->cur_altsetting;
@@ -530,7 +531,13 @@ static int picolink_probe(struct usb_interface *interface, const struct usb_devi
     dev->miscdev.fops = &picolink_fops;
     dev->miscdev.parent = &interface->dev;
     dev->miscdev.this_device = &interface->dev;
+    
     ret = misc_register(&dev->miscdev);
+    if (ret == -EEXIST) {
+        // Если кто-то создал файл /dev/picolink вручную (не через драйвер)
+        dev_err(&interface->dev, "CRITICAL: /dev/picolink already exists as a file. Please 'sudo rm /dev/picolink'\n");
+        goto err_free_urb;
+    }
 
     if (ret) {
         dev_err(&interface->dev, "Failed to register misc dev, error %d. Clean up might be needed.\n", ret);

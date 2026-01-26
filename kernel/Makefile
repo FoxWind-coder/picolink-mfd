@@ -4,7 +4,7 @@ PWD := $(shell pwd)
 BUILD_DIR := $(PWD)/build
 PROJECT_ROOT := $(shell realpath $(PWD)/..)
 
-SRCS := core.c mfd-gpio.c mfd-i2c.c mfd-uart.c mfd-adc.c
+SRCS := core.c mfd-gpio.c mfd-i2c.c mfd-uart.c mfd-adc.c mfd-spi.c
 OBJS := $(SRCS:.c=.o)
 
 all:
@@ -16,9 +16,11 @@ all:
 	@echo "ccflags-y := -I$(PWD) -I$(PROJECT_ROOT) -Wno-error=incompatible-pointer-types" >> $(BUILD_DIR)/Kbuild
 
 	# 2. Создаем симлинки
-	@for f in $(SRCS) picolink.h mfd-adc.h; do \
+	@for f in $(SRCS); do \
 		ln -sf $(PWD)/$$f $(BUILD_DIR)/$$f; \
 	done
+	@ln -sf $(PWD)/picolink.h $(BUILD_DIR)/picolink.h
+	@ln -sf $(PWD)/mfd-adc.h $(BUILD_DIR)/mfd-adc.h
 
 	# 3. Запускаем сборку
 	$(MAKE) -C $(KDIR) M=$(BUILD_DIR) modules

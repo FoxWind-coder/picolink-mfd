@@ -16,6 +16,7 @@ add_executable(picolink_mfd
     src/hardware_map.c
     src/i2c_handler.c
     src/uart_handler.c
+    src/spi_handler.c
 )
 
 # Link TinyUSB and standard libraries
@@ -26,6 +27,7 @@ target_link_libraries(picolink_mfd
     tinyusb_device 
     tinyusb_board
     hardware_i2c
+    hardware_spi
     hardware_pwm
     hardware_adc
 )

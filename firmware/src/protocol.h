@@ -53,6 +53,15 @@ typedef struct __attribute__((packed)) {
 } i2c_config_t;
 
 typedef struct __attribute__((packed)) {
+    uint32_t baudrate;
+    uint8_t sck_pin;
+    uint8_t mosi_pin;
+    uint8_t miso_pin;
+    uint8_t cs_pins[4]; // До 4-х CS пинов, 0xFF если не используется
+    uint8_t mode;       // SPI mode 0-3
+} spi_config_t;
+
+typedef struct __attribute__((packed)) {
     uint8_t type;       // Command type (cmd_type_t)
     uint8_t iface_idx;  // Target interface (iface_type_t)
     uint16_t length;    // Payload data length
