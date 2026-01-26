@@ -104,8 +104,8 @@ static int picolink_spi_transfer_one(struct spi_controller *ctlr, struct spi_dev
     if (xfer->tx_buf)
         memcpy(&pkt_out->payload[1], xfer->tx_buf, xfer->len);
 
-    dev_info(&pspi->mfd->udev->dev, "SPI TX: len=%u, cs=%d, first_byte=0x%02x\n", 
-            xfer->len, pkt_out->payload[0], pkt_out->payload[1]);
+    // dev_info(&pspi->mfd->udev->dev, "SPI TX: len=%u, cs=%d, first_byte=0x%02x\n", 
+    //         xfer->len, pkt_out->payload[0], pkt_out->payload[1]);
 
     ret = picolink_transfer(pspi->mfd, pkt_out, pkt_in);
 

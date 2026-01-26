@@ -121,7 +121,7 @@ void picolink_spi_handle(usb_packet_t *pkt) {
             resp.header.length = data_len;
 
             /* Log the start of the exchange */
-            picolink_log("SPI: Xfer %d bytes, CS %d", data_len, cs_idx);
+            // picolink_log("SPI: Xfer %d bytes, CS %d", data_len, cs_idx);
 
             spi_write_read_blocking(current_spi, data_ptr, resp.payload, data_len);
             
@@ -134,7 +134,7 @@ void picolink_spi_handle(usb_packet_t *pkt) {
             mutex_exit(&usb_mutex);
             
             /* If this message doesn't appear in dmesg, Pico is stuck in spi_write_read */
-            picolink_log("SPI: USB Write: %d", written); 
+            // picolink_log("SPI: USB Write: %d", written); 
         } else {
              picolink_log("SPI ERR: Invalid CS %d", cs_idx);
         }
