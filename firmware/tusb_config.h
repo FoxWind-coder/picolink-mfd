@@ -12,6 +12,8 @@
 #define CFG_TUSB_OS                 OPT_OS_NONE
 #endif
 
+#define PICO_STDIO_UART_DEFAULT_BIN 0
+
 // Enable Vendor Class
 #define CFG_TUD_ENABLED             1
 #define CFG_TUD_VENDOR              1

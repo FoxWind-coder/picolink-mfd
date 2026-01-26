@@ -34,6 +34,7 @@ target_link_libraries(picolink_mfd
 
 # Enable generation of .uf2 binary for flashing
 pico_add_extra_outputs(picolink_mfd)
+pico_enable_stdio_uart(picolink_mfd 0)
 
 # TinyUSB configuration (set include path for tusb_config.h)
 target_include_directories(picolink_mfd PRIVATE

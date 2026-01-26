@@ -6,26 +6,24 @@
 #include <string.h>
 #include <stdio.h>
 
-static uart_inst_t *u_inst = uart1;
+// static uart_inst_t *u_inst = uart1;
+static uart_inst_t *u_inst = NULL; 
 static bool uart_enabled = false;
 
 extern void picolink_log(const char *format, ...);
 
+static inline uint get_uart_irq(uart_inst_t *inst) {
+    return (inst == uart0) ? UART0_IRQ : UART1_IRQ;
+}
+
 void picolink_uart_disable(void) {
-    if (uart_enabled) {
-        // 1. Disable interrupts at UART and NVIC levels
+    if (uart_enabled && u_inst) {
+        uint irq_num = get_uart_irq(u_inst);
         uart_set_irq_enables(u_inst, false, false);
-        irq_set_enabled(UART1_IRQ, false);
-
-        // 2. Deinitialize the UART controller
+        irq_set_enabled(irq_num, false);
         uart_deinit(u_inst);
-
-        // 3. Restore pins to default state
-        // Note: Tracking active pins in static variables is recommended 
-        // if they need to be reset to a specific mode here.
-        
-        picolink_log("UART1: Disabled");
         uart_enabled = false;
+        picolink_log("UART: Disabled");
     }
 }
 
@@ -64,34 +62,42 @@ void picolink_uart_handle(usb_packet_t *pkt) {
     if (hdr->type == CMD_TYPE_CONFIG) {
         uart_config_t *cfg = (uart_config_t *)pkt->payload;
 
-        // Hardware map validation (UART1 is used as UART0 is reserved for Pico SDK debug)
-        if (RP2040_PIN_MAP[cfg->tx_pin].uart_id != 1 || 
-            RP2040_PIN_MAP[cfg->rx_pin].uart_id != 1) {
-            picolink_log("UART CFG ERR: Pins must belong to UART1 (At this time UART0 is debug)\n");
-            return;
+        int detected_uart_id = RP2040_PIN_MAP[cfg->tx_pin].uart_id;
+
+        if (detected_uart_id == -1) {
+        picolink_log("UART CFG ERR: Pin GP%d is not a UART pin\n", cfg->tx_pin);
+        return;
         }
 
+        uart_inst_t *new_inst = (detected_uart_id == 0) ? uart0 : uart1;
+
+        // // Hardware map validation (UART1 is used as UART0 is reserved for Pico SDK debug)
+        // if (RP2040_PIN_MAP[cfg->tx_pin].uart_id != 1 || 
+        //     RP2040_PIN_MAP[cfg->rx_pin].uart_id != 1) {
+        //     picolink_log("UART CFG ERR: Pins must belong to UART1 (At this time UART0 is debug)\n");
+        //     return;
+        // }
+
         if (uart_enabled) {
-            uart_deinit(u_inst);
-            irq_set_enabled(UART1_IRQ, false);
+        picolink_uart_disable();
         }
+
+        u_inst = new_inst;
+        uint irq_num = get_uart_irq(u_inst);
 
         uart_init(u_inst, cfg->baudrate);
         uart_set_format(u_inst, cfg->databits, cfg->stopbits, (uart_parity_t)cfg->parity);
-        
-        // Enable Hardware FIFO
         uart_set_fifo_enabled(u_inst, true);
 
         gpio_set_function(cfg->tx_pin, GPIO_FUNC_UART);
         gpio_set_function(cfg->rx_pin, GPIO_FUNC_UART);
 
-        // Configure RX interrupt logic
-        irq_set_exclusive_handler(UART1_IRQ, on_uart_rx);
-        irq_set_enabled(UART1_IRQ, true);
+        irq_set_exclusive_handler(irq_num, on_uart_rx);
+        irq_set_enabled(irq_num, true);
         uart_set_irq_enables(u_inst, true, false);
         
         uart_enabled = true;
-        // picolink_log("UART1 Enabled: TX%d RX%d @ %d baud\n", cfg->tx_pin, cfg->rx_pin, cfg->baudrate);
+        picolink_log("UART%d Enabled: TX%d RX%d\n", detected_uart_id, cfg->tx_pin, cfg->rx_pin);
     } 
     else if (hdr->type == CMD_TYPE_DATA && uart_enabled) {
         for (uint16_t i = 0; i < hdr->length; i++) {
