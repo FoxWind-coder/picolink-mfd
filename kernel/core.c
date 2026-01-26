@@ -491,7 +491,7 @@ static int picolink_probe(struct usb_interface *interface, const struct usb_devi
     dev->miscdev.minor = MISC_DYNAMIC_MINOR;
     dev->miscdev.name = "picolink";
     dev->miscdev.fops = &picolink_fops;
-    
+
     // Search for endpoints
     iface_desc = interface->cur_altsetting;
     for (i = 0; i < iface_desc->desc.bNumEndpoints; i++) {
@@ -531,7 +531,12 @@ static int picolink_probe(struct usb_interface *interface, const struct usb_devi
     dev->miscdev.parent = &interface->dev;
     dev->miscdev.this_device = &interface->dev;
     ret = misc_register(&dev->miscdev);
-    if (ret) goto err_free_urb;
+
+    if (ret) {
+        dev_err(&interface->dev, "Failed to register misc dev, error %d. Clean up might be needed.\n", ret);
+        // Можно добавить принудительный deregister и повтор, но лучше просто выйти с ошибкой
+        goto err_free_urb;
+    }
 
     // Start USB listener
     ret = usb_submit_urb(dev->read_urb, GFP_KERNEL);
