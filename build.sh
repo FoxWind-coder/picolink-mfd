@@ -50,7 +50,9 @@ if [ -d "$FIRMWARE_DIR" ]; then
     mkdir -p "$FIRMWARE_DIR/build"
     cd "$FIRMWARE_DIR/build"
     
-    cmake -DPICO_SDK_PATH="$PICO_SDK_PATH" ..
+    cmake -DPICO_SDK_PATH="$PICO_SDK_PATH" \
+      -D"PICO_CONFIG_EXTRA_ARGS=-DPICOTOOL_NO_LIBUSB=0" \
+      -D"PICOTOOL_FETCH_FROM_GIT_ARGS=-DPICOTOOL_NO_LIBUSB=0" ..
     make clean
     make -j$(nproc)
     
