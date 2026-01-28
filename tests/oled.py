@@ -1,7 +1,7 @@
 import smbus
 import time
 
-BUS_NUM = 6
+BUS_NUM = 3
 ADDR = 0x3c
 
 bus = smbus.SMBus(BUS_NUM)
