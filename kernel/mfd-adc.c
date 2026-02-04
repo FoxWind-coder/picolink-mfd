@@ -1,7 +1,9 @@
+// mfd-adc.c
 #include <linux/module.h>
 #include <linux/platform_device.h>
 #include <linux/hwmon.h>
 #include <linux/hwmon-sysfs.h>
+#include <linux/slab.h>
 #include "picolink.h"
 #include "mfd-adc.h"
 
@@ -10,7 +12,7 @@ static ssize_t adc_value_show(struct device *dev, struct device_attribute *attr,
     usb_packet_t *tx_pkt, *rx_pkt;
     int ret;
 
-    // Выделяем память в куче
+    // Allocate memory on the heap for USB packets
     tx_pkt = kzalloc(sizeof(*tx_pkt), GFP_KERNEL);
     rx_pkt = kzalloc(sizeof(*rx_pkt), GFP_KERNEL);
 
@@ -24,14 +26,17 @@ static ssize_t adc_value_show(struct device *dev, struct device_attribute *attr,
     tx_pkt->header.length = 1;
     tx_pkt->payload[0] = achan->pin;
 
-    // Передаем указатели
+    // Perform atomic USB transfer via MFD core
     ret = picolink_transfer(achan->mfd, tx_pkt, rx_pkt);
     
     if (ret == 0) {
+        // Reconstruct 16-bit raw value from payload (Big-Endian)
         uint16_t raw = (rx_pkt->payload[1] << 8) | rx_pkt->payload[2];
-        // uint32_t mv = (raw * 3300) / 4095;
-        uint32_t mv = raw;
-        ret = sprintf(buf, "%u\n", mv);
+        
+        // Output raw value. Calibration (e.g., (raw * 3300) / 4095) 
+        // can be performed here or in userspace.
+        uint32_t val = raw;
+        ret = sprintf(buf, "%u\n", val);
     }
 
 out:
@@ -39,6 +44,8 @@ out:
     kfree(rx_pkt);
     return ret;
 }
+
+
 
 static DEVICE_ATTR(value, S_IRUGO, adc_value_show, NULL);
 
@@ -57,8 +64,9 @@ const struct attribute_group *picolink_adc_groups[] = {
 };
 EXPORT_SYMBOL_GPL(picolink_adc_groups);
 
-// Драйвер остается пустым, так как мы регистрируем hwmon напрямую в core.c 
-// для гибкости именования, но структуру оставим для совместимости MFD.
+/* * The driver structure is kept for MFD compatibility. 
+ * Registration is handled in core.c for naming flexibility.
+ */
 struct platform_driver picolink_adc_driver = {
     .driver = { .name = "picolink-adc" },
 };

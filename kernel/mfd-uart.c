@@ -1,11 +1,11 @@
-//mfd-uart.c
+// mfd-uart.c
 #include <linux/module.h>
 #include <linux/platform_device.h>
 #include <linux/tty.h>
 #include <linux/version.h>
 #include <linux/tty_flip.h>
 #include <linux/slab.h>
-#include <linux/serial.h> // Added for driver operations
+#include <linux/serial.h>
 #include "picolink.h"
 
 #if KERNEL_VERSION(6, 11, 0) > LINUX_VERSION_CODE
@@ -18,7 +18,6 @@
 
 #define MAX_ACTIVE_URBS 4
 
-// Prototypes to prevent "no previous prototype" warnings
 void picolink_uart_push_data(const u8 *data, size_t size);
 int picolink_tty_init(void);
 void picolink_tty_exit(void);
@@ -43,12 +42,6 @@ static void p_uart_close(struct tty_struct *tty, struct file *filp) {
     }
 }
 
-// static void p_uart_write_bulk_callback(struct urb *urb) {
-//     if (urb->transfer_buffer)
-//         kfree(urb->transfer_buffer);
-//     usb_free_urb(urb);
-// }
-
 static void p_uart_write_bulk_callback(struct urb *urb) {
     struct picolink_uart *pu = urb->context;
     
@@ -66,9 +59,8 @@ static ssize_t p_uart_write(struct tty_struct *tty, const u8 *buf, size_t count)
     struct picolink_uart *pu = tty->driver_data;
     struct urb *urb;
     usb_packet_t *pkt;
-    int len = count > 60 ? 60 : count;
+    int len;
 
-    // CRITICAL CHECK
     if (!pu || !pu->mfd || pu->mfd->disconnected || !pu->mfd->udev) {
         pr_err("picolink-uart: Attempt to write to NULL device\n");
         return -ENODEV;
@@ -109,9 +101,12 @@ static ssize_t p_uart_write(struct tty_struct *tty, const u8 *buf, size_t count)
 
 static unsigned int p_uart_write_room(struct tty_struct *tty) {
     struct picolink_uart *pu = tty->driver_data;
+    
+    // Throttle writing if USB transmission queue is full
     if (atomic_read(&pu->active_urbs) >= MAX_ACTIVE_URBS)
         return 0;
-    return 64; 
+
+    return 60; 
 }
 
 static void p_uart_set_termios(struct tty_struct *tty, const struct ktermios *old) {
@@ -122,7 +117,6 @@ static void p_uart_set_termios(struct tty_struct *tty, const struct ktermios *ol
 
     if (!pu || !pu->mfd || pu->mfd->disconnected || !pu->mfd->udev) return;
 
-    // Allocate memory for URB and packet
     urb = usb_alloc_urb(0, GFP_ATOMIC);
     if (!urb) return;
 
@@ -144,7 +138,6 @@ static void p_uart_set_termios(struct tty_struct *tty, const struct ktermios *ol
     cfg->stopbits = (C_CSTOPB(tty)) ? 2 : 1;
     cfg->parity = (C_PARENB(tty)) ? 1 : 0;
 
-    // Use the same callback as write, since it simply cleans up memory
     usb_fill_bulk_urb(urb, pu->mfd->udev,
                       usb_sndbulkpipe(pu->mfd->udev, pu->mfd->bulk_out_endpointAddr),
                       pkt, sizeof(*pkt),
@@ -155,18 +148,17 @@ static void p_uart_set_termios(struct tty_struct *tty, const struct ktermios *ol
         usb_free_urb(urb);
     }
 }
+
 static void p_uart_hangup(struct tty_struct *tty) {
     struct picolink_uart *pu = tty->driver_data;
     tty_port_hangup(&pu->port);
 }
 
-static int p_uart_tiocmget(struct tty_struct *tty)
-{
+static int p_uart_tiocmget(struct tty_struct *tty) {
     return TIOCM_DTR | TIOCM_RTS | TIOCM_CD | TIOCM_CTS;
 }
 
-static int p_uart_tiocmset(struct tty_struct *tty, unsigned int set, unsigned int clear)
-{
+static int p_uart_tiocmset(struct tty_struct *tty, unsigned int set, unsigned int clear) {
     return 0;
 }
 
@@ -195,9 +187,8 @@ static int picolink_uart_probe(struct platform_device *pdev) {
     if (!pu->mfd) return -EINVAL;
 
     tty_port_init(&pu->port);
-    pu->port.ops = &p_port_ops; // Bind port operations
+    pu->port.ops = &p_port_ops;
 
-    // Register device
     pu->dev = tty_port_register_device(&pu->port, picolink_tty_driver, 0, &pdev->dev);
     if (IS_ERR(pu->dev)) {
         ret = PTR_ERR(pu->dev);
@@ -212,11 +203,23 @@ static int picolink_uart_probe(struct platform_device *pdev) {
     return 0;
 }
 
-// This function should be called by core.c when receiving RESP data from USB
+// Injects data into TTY port buffer from USB RESP data
 void picolink_uart_push_data(const u8 *data, size_t size) {
-    if (uart_instance && uart_instance->mfd && !uart_instance->mfd->disconnected) {
-        tty_insert_flip_string(&uart_instance->port, data, size);
-        tty_flip_buffer_push(&uart_instance->port);
+    struct picolink_uart *pu = uart_instance;
+    int inserted;
+
+    if (!pu || size == 0)
+        return;
+
+    inserted = tty_insert_flip_string(&pu->port, data, size);
+    
+    if (inserted < size) {
+        pr_warn("picolink-uart: TTY buffer full, lost %zu bytes\n", size - inserted);
+    }
+
+    // Push data to the line discipline (ldisc)
+    if (inserted > 0) {
+        tty_flip_buffer_push(&pu->port);
     }
 }
 EXPORT_SYMBOL_GPL(picolink_uart_push_data);
@@ -239,7 +242,6 @@ struct platform_driver picolink_uart_driver = {
     .remove = picolink_uart_remove,
 };
 
-// TTY driver initialization (called once during module load)
 int __init picolink_tty_init(void) {
     picolink_tty_driver = tty_alloc_driver(1, TTY_DRIVER_REAL_RAW | TTY_DRIVER_DYNAMIC_DEV);
     if (IS_ERR(picolink_tty_driver))
@@ -260,6 +262,6 @@ int __init picolink_tty_init(void) {
 void picolink_tty_exit(void) {
     if (picolink_tty_driver) {
         tty_unregister_driver(picolink_tty_driver);
-        tty_driver_kref_put(picolink_tty_driver); // Replacement for put_tty_driver in modern kernels
+        tty_driver_kref_put(picolink_tty_driver); 
     }
 }

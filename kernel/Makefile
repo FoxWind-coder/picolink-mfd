@@ -10,19 +10,19 @@ OBJS := $(SRCS:.c=.o)
 all:
 	@mkdir -p $(BUILD_DIR)
 	
-	# 1. Генерируем Kbuild файл "на лету" внутри папки build
+	# 1. Generate Kbuild file on-the-fly inside the build directory
 	@echo "obj-m := $(MODULE_NAME).o" > $(BUILD_DIR)/Kbuild
 	@echo "$(MODULE_NAME)-objs := $(OBJS)" >> $(BUILD_DIR)/Kbuild
 	@echo "ccflags-y := -I$(PWD) -I$(PROJECT_ROOT) -Wno-error=incompatible-pointer-types" >> $(BUILD_DIR)/Kbuild
 
-	# 2. Создаем симлинки
+	# 2. Create symbolic links for source files and headers
 	@for f in $(SRCS); do \
 		ln -sf $(PWD)/$$f $(BUILD_DIR)/$$f; \
 	done
 	@ln -sf $(PWD)/picolink.h $(BUILD_DIR)/picolink.h
 	@ln -sf $(PWD)/mfd-adc.h $(BUILD_DIR)/mfd-adc.h
 
-	# 3. Запускаем сборку
+	# 3. Execute the kernel build system
 	$(MAKE) -C $(KDIR) M=$(BUILD_DIR) modules
 
 clean:

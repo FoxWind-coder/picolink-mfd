@@ -18,6 +18,7 @@
 mutex_t usb_mutex;
 
 static queue_t packet_queue;
+void picolink_uart_flush_to_usb(void);
 
 /**
  * Sends debug/log strings back to the host via USB vendor interface.
@@ -109,8 +110,6 @@ void core1_entry() {
                 tud_vendor_write(&resp_pkt, sizeof(resp_pkt));
                 tud_vendor_write_flush();
                 mutex_exit(&usb_mutex);
-                
-                // picolink_log("ADC RD: Pin %d = %d\n", pin, result);
             }
         }
 
@@ -134,7 +133,6 @@ void core1_entry() {
             else if (hdr->type == CMD_TYPE_DATA) {
                 uint8_t value = pkt.payload[1];
                 gpio_put(pin, value);
-                // picolink_log("GPIO WR: Pin %d = %d\n", pin, value);
             }
             else if (hdr->type == CMD_TYPE_READ) {
                 usb_packet_t resp_pkt;
@@ -149,7 +147,6 @@ void core1_entry() {
                 tud_vendor_write(&resp_pkt, sizeof(resp_pkt));
                 tud_vendor_write_flush();
                 mutex_exit(&usb_mutex);
-                // picolink_log("GPIO RD: Pin %d is %d\n", pin, resp_pkt.payload[1]);
             }
         } 
 
@@ -198,8 +195,8 @@ int main() {
     stdio_init_all();
     mutex_init(&usb_mutex);
     
-    // 16-packet queue. Size is critical to prevent loss during bursts like I2C scans.
-    queue_init(&packet_queue, sizeof(usb_packet_t), 16);
+    // 128-packet queue. Size is critical to prevent loss during bursts like I2C scans.
+    queue_init(&packet_queue, sizeof(usb_packet_t), 128);
 
     // Initial delay for hardware stability and log viewing
     sleep_ms(1000);
@@ -214,7 +211,13 @@ int main() {
     multicore_launch_core1(core1_entry);
 
     while (1) {
-        tud_task(); // TinyUSB background processing
+        // TinyUSB is mostly thread-safe internally, but we use a mutex for data writes
+        tud_task(); 
+        
+        // Push any asynchronous UART data collected in IRQs to the USB host
+        picolink_uart_flush_to_usb();
+        
+        tight_loop_contents();
     }
     return 0;
 }
@@ -224,13 +227,12 @@ int main() {
  */
 void tud_vendor_rx_cb(uint8_t itf, uint8_t const* buffer, uint16_t bufsize) {
     usb_packet_t rx_pkt;
-    
-    uint32_t read_bytes = tud_vendor_n_read(itf, &rx_pkt, sizeof(rx_pkt));
-
-    if (read_bytes >= sizeof(picolink_header_t)) {
-        // Queue the packet for Core 1 to process
-        if (!queue_try_add(&packet_queue, &rx_pkt)) {
-            // Queue full: typically handled by host driver timeouts
-        }
+    // If data was received and the queue has room
+    if (bufsize > 0 && !queue_is_full(&packet_queue)) {
+        memset(&rx_pkt, 0, sizeof(rx_pkt));
+        // Copy received data, capping at the size of the packet structure
+        uint16_t to_read = (bufsize > sizeof(rx_pkt)) ? sizeof(rx_pkt) : bufsize;
+        tud_vendor_read(&rx_pkt, to_read);
+        queue_try_add(&packet_queue, &rx_pkt);
     }
 }

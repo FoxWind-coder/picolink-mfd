@@ -12,7 +12,6 @@ struct picolink_adc_chan {
     char name[32];
 };
 
-// Экспортируем группу атрибутов для core.c
 extern const struct attribute_group *picolink_adc_groups[];
 
 #endif

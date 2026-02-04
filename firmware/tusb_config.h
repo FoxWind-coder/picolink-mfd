@@ -19,8 +19,8 @@
 #define CFG_TUD_VENDOR              1
 
 // Buffers
-#define CFG_TUD_VENDOR_RX_BUFSIZE   256
-#define CFG_TUD_VENDOR_TX_BUFSIZE   256
+#define CFG_TUD_VENDOR_RX_BUFSIZE   1024
+#define CFG_TUD_VENDOR_TX_BUFSIZE   1024
 #define CFG_TUD_ENDPOINT0_SIZE      64
 
 #endif

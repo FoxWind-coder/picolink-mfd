@@ -51,7 +51,7 @@ void picolink_i2c_handle(usb_packet_t *pkt) {
         current_sda = sda;
         current_scl = scl;
 
-        i2c_init(current_i2c, 100000); // Default 100kHz
+        i2c_init(current_i2c, 1000000); // Default 100kHz
         gpio_set_function(sda, GPIO_FUNC_I2C);
         gpio_set_function(scl, GPIO_FUNC_I2C);
         gpio_pull_up(sda);
@@ -91,7 +91,7 @@ void picolink_i2c_handle(usb_packet_t *pkt) {
             if (result >= 0) picolink_log("I2C: Found 0x%02x", addr);
         } else {
             // Standard data write
-            result = i2c_write_blocking(current_i2c, addr, &pkt->payload[1], len, false);
+            result = i2c_write_blocking_until(current_i2c, addr, &pkt->payload[1], len, false, make_timeout_time_us(25000));
         }
         
         usb_packet_t resp;

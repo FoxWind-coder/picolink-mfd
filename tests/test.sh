@@ -1,9 +1,9 @@
 #!/bin/bash
 
 # Pin settings (Base 588 + 25 = 613)
-GPIO_LED=612
+GPIO_LED=537
 I2C_ADDR=0x3c
-I2C_BUS=6
+I2C_BUS=3
 
 # Cleanup function for exit (CTRL+C)
 cleanup() {

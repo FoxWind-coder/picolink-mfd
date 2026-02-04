@@ -1,4 +1,4 @@
-//mfd_i2c.c
+// mfd_i2c.c
 #include <linux/module.h>
 #include <linux/i2c.h>
 #include <linux/platform_device.h>
@@ -23,56 +23,60 @@ struct picolink_i2c {
 static int picolink_i2c_usb_xfer(struct picolink_i2c *pi2c, struct i2c_msg *msg)
 {
     struct picolink_dev *mfd_core = dev_get_drvdata(pi2c->pdev->dev.parent);
-    usb_packet_t *pkt_out, *pkt_in;
+    usb_packet_t pkt_out; 
+    usb_packet_t pkt_in;  
     int ret;
+    int copy_len;
     
     if (!mfd_core || mfd_core->disconnected)
         return -ENODEV;
 
-    pkt_out = kzalloc(sizeof(*pkt_out), GFP_KERNEL);
-    pkt_in = kzalloc(sizeof(*pkt_in), GFP_KERNEL);
-    if (!pkt_out || !pkt_in) {
-        ret = -ENOMEM;
-        goto out;
-    }
+    memset(&pkt_out, 0, sizeof(pkt_out));
+    pkt_out.header.iface_idx = IFACE_I2C;
 
-    /* Prepare the request packet */
-    pkt_out->header.iface_idx = IFACE_I2C;
+    // 1. PACKET PREPARATION (REQUEST)
     if (msg->flags & I2C_M_RD) {
-        pkt_out->header.type = CMD_TYPE_READ;
-        pkt_out->header.length = 2;
-        pkt_out->payload[0] = msg->addr;
-        pkt_out->payload[1] = msg->len;
+        pkt_out.header.type = CMD_TYPE_READ;
+        pkt_out.header.length = 2;
+        pkt_out.payload[0] = msg->addr;
+        pkt_out.payload[1] = msg->len;
     } else {
-        pkt_out->header.type = CMD_TYPE_DATA;
-        pkt_out->header.length = msg->len + 1;
-        pkt_out->payload[0] = msg->addr;
-        if (msg->len > 0) memcpy(&pkt_out->payload[1], msg->buf, msg->len);
-    }
-
-    /* Synchronous transfer: sends packet and waits for Pico response */
-    ret = picolink_transfer(mfd_core, pkt_out, pkt_in);
-
-    /* Analyze the transfer result */
-    if (ret == 0) {
-        if (pkt_in->header.type == CMD_TYPE_RESP && pkt_in->header.iface_idx == IFACE_I2C) {
-            if (pkt_in->header.length > 0) {
-                if (msg->flags & I2C_M_RD) {
-                    memcpy(msg->buf, pkt_in->payload, msg->len);
-                }
-                ret = 0; 
-            } else {
-                ret = -ENXIO; /* NACK: device did not respond */
-            }
-        } else {
-            ret = -EPROTO; 
+        pkt_out.header.type = CMD_TYPE_DATA;
+        // Limit length to payload capacity (60 bytes)
+        copy_len = (msg->len > 60) ? 60 : msg->len; 
+        
+        pkt_out.header.length = copy_len + 1;
+        pkt_out.payload[0] = msg->addr;
+        if (copy_len > 0) {
+            memcpy(&pkt_out.payload[1], msg->buf, copy_len);
         }
     }
 
-out:
-    kfree(pkt_out);
-    kfree(pkt_in);
-    return ret;
+    // 2. TRANSMISSION
+    ret = picolink_transfer(mfd_core, &pkt_out, &pkt_in);
+
+    // 3. RESULT PROCESSING (RESPONSE)
+    if (ret == 0) {
+        if (pkt_in.header.type == CMD_TYPE_RESP) {
+
+            if (pkt_in.header.length == 0) {
+                // Length 0 indicates an I2C error occurred on the Pico side
+                return -ENXIO; // No such device or address
+            }
+            
+            // If reading, copy data FROM Pico TO system buffer
+            if (msg->flags & I2C_M_RD) {
+                copy_len = (msg->len > 60) ? 60 : msg->len;
+                memcpy(msg->buf, pkt_in.payload, copy_len);
+            }
+        } else {
+            dev_err(&mfd_core->interface->dev, "I2C: Unexpected response type 0x%x\n", pkt_in.header.type);
+            ret = -EIO;
+        }
+    }
+
+    // Return 1 on success (number of messages processed)
+    return (ret == 0) ? 1 : ret;
 }
 
 static int picolink_i2c_xfer(struct i2c_adapter *adap, struct i2c_msg *msgs, int num)
@@ -99,8 +103,6 @@ static const struct i2c_algorithm picolink_i2c_algo = {
 static int picolink_i2c_probe(struct platform_device *pdev)
 {
     struct picolink_i2c *pi2c;
-    // struct picolink_dev *mfd_core = dev_get_drvdata(pdev->dev.parent);
-    // usb_packet_t *cfg_pkt;
     int ret;
 
     pi2c = devm_kzalloc(&pdev->dev, sizeof(*pi2c), GFP_KERNEL);
@@ -118,17 +120,6 @@ static int picolink_i2c_probe(struct platform_device *pdev)
     ret = i2c_add_adapter(&pi2c->adap);
     if (ret) return ret;
 
-    // msleep(100); 
-    // cfg_pkt = kzalloc(sizeof(*cfg_pkt), GFP_KERNEL);
-    // if (cfg_pkt) {
-    //     cfg_pkt->header.type = CMD_TYPE_CONFIG;
-    //     cfg_pkt->header.iface_idx = IFACE_I2C;
-    //     cfg_pkt->header.length = 2;
-    //     cfg_pkt->payload[0] = 4;
-    //     cfg_pkt->payload[1] = 5;
-    //     picolink_send_packet(mfd_core->udev, mfd_core->bulk_out_endpointAddr, cfg_pkt, sizeof(*cfg_pkt));
-    //     kfree(cfg_pkt);
-    // }
     return 0;
 }
 
@@ -145,4 +136,5 @@ struct platform_driver picolink_i2c_driver = {
     .remove = picolink_i2c_remove,
 };
 EXPORT_SYMBOL_GPL(picolink_i2c_driver);
+
 MODULE_LICENSE("GPL");

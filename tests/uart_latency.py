@@ -2,38 +2,38 @@ import serial
 import time
 import sys
 
-# Настройки портов
+# Port configurations
 PICO_PORT = '/dev/ttyPico0'
 USB_PORT = '/dev/ttyUSB0'
-BAUD = 500000 # Вернул вашу скорость из лога strace
+BAUD = 500000 
 
 try:
     s_out = serial.Serial(PICO_PORT, BAUD, timeout=0)
     s_in = serial.Serial(USB_PORT, BAUD, timeout=0)
 except Exception as e:
-    print(f"Ошибка открытия портов: {e}")
+    print(f"Error opening ports: {e}")
     sys.exit(1)
 
-print(f"Тестирование {PICO_PORT} -> {USB_PORT} @ {BAUD}...")
-print("Нажмите Ctrl+C для остановки.")
+print(f"Testing {PICO_PORT} -> {USB_PORT} @ {BAUD}...")
+print("Press Ctrl+C to stop.")
 
 time.sleep(0.5) 
 last_report_time = time.time()
 latencies = []
-total_sent = 0      # Общий объем отправленных данных
-total_received = 0  # Общий объем полученных данных
+total_sent = 0      
+total_received = 0  
 
 try:
     while True:
         current_time = time.time()
         
-        # 1. Отправляем метку времени
+        # Send timestamp payload
         timestamp_send = time.time()
         payload = f"{timestamp_send:.6f}\n".encode()
         bytes_sent = s_out.write(payload)
         total_sent += bytes_sent
         
-        # 2. Пытаемся прочитать ответ
+        # Read response
         time.sleep(0.001) 
         line = s_in.readline()
         
@@ -44,16 +44,15 @@ try:
                 latency_ms = (time.time() - timestamp_rcv) * 1000
                 latencies.append(latency_ms)
             except (ValueError, UnicodeDecodeError):
-                pass # Битая строка или ошибка декодирования
+                pass # Ignore corrupted data or decoding errors
 
-        # 3. Вывод статистики каждые 100мс
+        # Output statistics every 100ms
         if current_time - last_report_time >= 0.1:
             if latencies:
                 avg_latency = sum(latencies) / len(latencies)
                 min_lat = min(latencies)
                 max_lat = max(latencies)
                 
-                # Форматируем объем данных (КБ или МБ для удобства)
                 sent_kb = total_sent / 1024
                 recv_kb = total_received / 1024
                 
@@ -65,16 +64,15 @@ try:
                 sys.stdout.write(stats + "   ")
                 sys.stdout.flush()
             
-            # Очищаем список задержек для следующего окна вывода, 
-            # но total_sent/received продолжаем копить
+            # Reset latency list for the next window while keeping cumulative totals
             latencies = []
             last_report_time = current_time
 
 except KeyboardInterrupt:
-    print("\nТест остановлен пользователем.")
+    print("\nTest stopped by user.")
 finally:
-    print(f"Итого передано: {total_sent / 1024:.2f} KB")
-    print(f"Итого получено: {total_received / 1024:.2f} KB")
-    # Важно: закрытие портов вызывает Kernel Panic в вашем текущем драйвере!
+    print(f"Total Sent: {total_sent / 1024:.2f} KB")
+    print(f"Total Received: {total_received / 1024:.2f} KB")
+    # Warning: Closing ports causes Kernel Panic in the current driver!
     s_out.close()
     s_in.close()

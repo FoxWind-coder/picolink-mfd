@@ -12,17 +12,23 @@
 struct picolink_dev {
     struct usb_device *udev;
     struct usb_interface *interface;
-    struct miscdevice miscdev; // For /dev/picolink
+    struct miscdevice miscdev;
     uint8_t bulk_out_endpointAddr;
     uint8_t bulk_in_endpointAddr;
     struct urb *read_urb;
     void *bulk_in_buffer;
-    usb_packet_t i2c_resp;     // Buffer for the response
-    struct completion i2c_done; // Signal that the response has been received
+    usb_packet_t i2c_resp;  
+    struct completion i2c_done; 
+    usb_packet_t *transfer_tx_buf; 
+    usb_packet_t *transfer_rx_buf;
+    usb_packet_t *current_rx_ptr;
     bool disconnected;
     bool i2c_registered;
     bool spi_registered;
     bool uart_registered;
+    struct mutex i2c_lock;       
+    usb_packet_t *current_rx_buf;  
+
 };
 
 struct picolink_uart {
@@ -36,6 +42,5 @@ struct picolink_uart {
 };
 
 int picolink_send_packet(struct usb_device *udev, uint8_t endpoint, void *data, int len);
-// Prototype added to prevent warnings in core.c
 int picolink_transfer(struct picolink_dev *dev, usb_packet_t *tx_pkt, usb_packet_t *rx_pkt);
 #endif

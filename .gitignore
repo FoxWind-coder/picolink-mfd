@@ -6,4 +6,5 @@ picolink-mfd/kernel/*.mod
 picolink-mfd/kernel/*.o
 picolink-mfd/kernel/*.cmd
 picolink-mfd/kernel/*.d
+tests/*bin
 

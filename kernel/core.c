@@ -46,15 +46,7 @@ extern int picolink_tty_init(void);
 extern void picolink_tty_exit(void);
 extern void picolink_uart_push_data(const u8 *data, size_t size);
 
-/* MFD cells description */
-// static struct mfd_cell picolink_cells[] = {
-//     { .name = "picolink-gpio" },
-//     { .name = "picolink-i2c"  },
-//     { .name = "picolink-uart" },
-//     { .name = "picolink-adc"  },
-//     { .name = "picolink-spi"  },
-// };
-
+/* MFD cells description - registered dynamically based on user commands */
 static struct mfd_cell i2c_cell = { .name = "picolink-i2c" };
 static struct mfd_cell uart_cell = { .name = "picolink-uart" };
 static struct mfd_cell spi_cell = { .name = "picolink-spi" };
@@ -98,7 +90,7 @@ static void picolink_led_set_brightness(struct led_classdev *led_cdev,
 
     ret = usb_submit_urb(urb, GFP_ATOMIC);
     if (ret) {
-        /* If device was unplugged during submission, it's expected now */
+        /* Ignore expected errors if the device was unplugged during submission */
         if (ret != -ENODEV && ret != -ESHUTDOWN)
             dev_err(&dev->udev->dev, "Failed to submit LED URB: %d\n", ret);
         usb_free_urb(urb);
@@ -127,7 +119,7 @@ static struct attribute *picolink_led_attrs[] = {
 };
 ATTRIBUTE_GROUPS(picolink_led);
 
-/* Handle incoming data from Pico */
+/* Handle incoming data from Pico via Bulk Input endpoint */
 static void picolink_bulk_in_callback(struct urb *urb) {
     struct picolink_dev *dev = urb->context;
     usb_packet_t *pkt = dev->bulk_in_buffer;
@@ -142,14 +134,14 @@ static void picolink_bulk_in_callback(struct urb *urb) {
     case -ESHUTDOWN:
         return;      /* Device disconnected */
     default:
-        goto resubmit; /* Protocol error, try again */
+        goto resubmit; /* Protocol/hardware error, try again */
     }
 
     if (urb->actual_length >= sizeof(picolink_header_t)) {
         len = pkt->header.length;
         if (len > 60) len = 60; 
 
-        /* Forward Pico logs to dmesg */
+        /* Forward Pico hardware logs to system dmesg */
         if (pkt->header.type == CMD_TYPE_LOG) {
             char log_msg[61];
             memcpy(log_msg, pkt->payload, len);
@@ -159,19 +151,31 @@ static void picolink_bulk_in_callback(struct urb *urb) {
         /* UART Data handling */
         else if (pkt->header.iface_idx == IFACE_UART) {
             if (pkt->header.type == CMD_TYPE_RESP || pkt->header.type == CMD_TYPE_DATA) {
-                picolink_uart_push_data(pkt->payload, len);
+                /* Pico can send 1-60 bytes in a single packet */
+                if (len > 0) {
+                    picolink_uart_push_data(pkt->payload, len);
+                }
             }
-        } 
-        /* Sync responses for I2C / GPIO / ADC / SPI */
-        else if (pkt->header.iface_idx == IFACE_I2C || pkt->header.iface_idx == IFACE_GPIO) {
-            memcpy(&dev->i2c_resp, pkt, sizeof(usb_packet_t));
-            complete(&dev->i2c_done);
-        } else if (pkt->header.iface_idx == IFACE_ADC) {
-            memcpy(&dev->i2c_resp, pkt, sizeof(usb_packet_t));
-            complete(&dev->i2c_done);
+        }
+        /* Sync responses for I2C / GPIO / ADC */
+        else if (pkt->header.iface_idx == IFACE_I2C || 
+            pkt->header.iface_idx == IFACE_GPIO || 
+            pkt->header.iface_idx == IFACE_ADC) {
+            
+            usb_packet_t *dest = dev->current_rx_buf; 
+            if (dest) {
+                memcpy(dest, pkt, sizeof(usb_packet_t));
+                dev->current_rx_buf = NULL; 
+                complete(&dev->i2c_done);
+            }
         } else if (pkt->header.iface_idx == IFACE_SPI) {
-            memcpy(&dev->i2c_resp, pkt, sizeof(usb_packet_t));
-            complete(&dev->i2c_done);
+            usb_packet_t *dest = dev->current_rx_buf; 
+            if (dest) {
+                /* Copy the entire packet so sub-drivers can verify header integrity */
+                memcpy(dest, pkt, sizeof(usb_packet_t));
+                dev->current_rx_buf = NULL; 
+                complete(&dev->i2c_done);
+            }
         }
     }
 
@@ -181,7 +185,7 @@ resubmit:
     }
 }
 
-/* Packet transmission function */
+/* Helper for one-way packet transmission */
 int picolink_send_packet(struct usb_device *udev, uint8_t endpoint, void *data, int len) {
     int actual_length;
     return usb_bulk_msg(udev, usb_sndbulkpipe(udev, endpoint),
@@ -199,16 +203,14 @@ static int is_named_device(struct device *dev, void *data) {
 static void picolink_remove_subdev(struct device *parent, const char *name) {
     struct device *child = device_find_child(parent, (void *)name, is_named_device);
     if (child) {
-        // platform_device_unregister удалит устройство
+        /* platform_device_unregister handles device cleanup */
         platform_device_unregister(to_platform_device(child));
         put_device(child);
     }
 }
 
-/* Handler for /dev/picolink writes */
+/* Handler for /dev/picolink writes: used for dynamic configuration via userspace strings */
 static ssize_t picolink_dev_write(struct file *file, const char __user *buf, size_t count, loff_t *ppos) {
-    // struct miscdevice *mdev = file->private_data;
-    // struct picolink_dev *dev = container_of(mdev, struct picolink_dev, miscdev);
     struct picolink_dev *dev = file->private_data;
     char kbuf[64];
     int sda, scl, tx, rx;
@@ -218,7 +220,6 @@ static ssize_t picolink_dev_write(struct file *file, const char __user *buf, siz
 
     if (!dev) return -EIO;
 
-    // dev_info(&dev->udev->dev, "picolink_write called: count=%zu\n", count);
     pr_info("picolink: write called, count=%zu\n", count);
 
     if (count == 0) return 0;
@@ -294,7 +295,7 @@ static ssize_t picolink_dev_write(struct file *file, const char __user *buf, siz
                         mutex_unlock(&leds_lock);
                         kfree(pled);
                     } else {
-                        /* Send configuration to Pico hardware */
+                        /* Send configuration packet to Pico hardware */
                         pkt->header.type = CMD_TYPE_CONFIG;
                         pkt->header.iface_idx = IFACE_PWM;
                         pkt->header.length = 1;
@@ -410,7 +411,7 @@ static ssize_t picolink_dev_write(struct file *file, const char __user *buf, siz
     } else if (strncmp(kbuf, "spi ", 4) == 0) {
         int sck, mosi, miso, cs_pin, cs_idx;
         
-        /* 1. Конфигурация шины */
+        /* 1. Bus Configuration */
         if (sscanf(kbuf, "spi %d %d %d", &sck, &mosi, &miso) == 3) {
             pkt->header.type = CMD_TYPE_CONFIG;
             pkt->header.iface_idx = IFACE_SPI;
@@ -425,16 +426,15 @@ static ssize_t picolink_dev_write(struct file *file, const char __user *buf, siz
             
             picolink_send_packet(dev->udev, dev->bulk_out_endpointAddr, pkt, sizeof(*pkt));
 
-            /* КРИТИЧЕСКОЕ ИСПРАВЛЕНИЕ: Регистрируем SPI контроллер в Linux */
+            /* Register the SPI controller in Linux */
             if (!dev->spi_registered) {
                 ret = mfd_add_devices(&dev->interface->dev, PLATFORM_DEVID_AUTO, &spi_cell, 1, NULL, 0, NULL);
                 if (!ret) dev->spi_registered = true;
                 dev_info(&dev->udev->dev, "SPI controller registered (SCK:%d)\n", sck);
             }
         }
-        /* 2. Добавление CS */
+        /* 2. Adding Chip Select (CS) */
         else if (sscanf(kbuf, "spi cs %d %d", &cs_idx, &cs_pin) == 2) {
-            /* Проверяем, зарегистрирован ли контроллер, прежде чем добавлять устройство */
             if (!dev->spi_registered) {
                 dev_err(&dev->udev->dev, "Error: SPI bus must be configured before adding CS!\n");
                 kfree(pkt);
@@ -442,12 +442,31 @@ static ssize_t picolink_dev_write(struct file *file, const char __user *buf, siz
             }
 
             if (cs_idx >= 0 && cs_idx < 4) {
-                // ... (ваш код подготовки pkt для CS) ...
+                /* Prepare packet for Pico */
+                pkt->header.type = CMD_TYPE_CONFIG;
+                pkt->header.iface_idx = IFACE_SPI;
+                pkt->header.length = sizeof(spi_config_t);
+                
+                spi_config_t *scfg = (spi_config_t *)pkt->payload;
+                
+                /* 0xFF markers tell the firmware to keep existing bus pin settings */
+                scfg->sck_pin = 0xFF;
+                scfg->mosi_pin = 0xFF;
+                scfg->miso_pin = 0xFF;
+                
+                /* Default all CS to "unchanged" */
+                memset(scfg->cs_pins, 0xFF, 4);
+                /* Set the specific pin for this CS index */
+                scfg->cs_pins[cs_idx] = (uint8_t)cs_pin;
+
+                /* Send config to Pico */
                 picolink_send_packet(dev->udev, dev->bulk_out_endpointAddr, pkt, sizeof(*pkt));
                 
-                /* Теперь это безопасно, так как шина существует */
+                /* Register spidev in the Linux kernel */
                 extern int picolink_spi_add_device(struct picolink_dev *mfd, int index, int pin);
                 picolink_spi_add_device(dev, cs_idx, cs_pin);
+                
+                dev_info(&dev->udev->dev, "SPI: Configured CS%d on pin %d\n", cs_idx, cs_pin);
             }
         }
     }
@@ -455,40 +474,47 @@ static ssize_t picolink_dev_write(struct file *file, const char __user *buf, siz
     return count;
 }
 
-
-int picolink_transfer(struct picolink_dev *dev, usb_packet_t *tx_pkt, usb_packet_t *rx_pkt) {
+/* Synchronous packet exchange: sends TX and waits for specific RX response */
+int picolink_transfer(struct picolink_dev *dev, usb_packet_t *tx_pkt, usb_packet_t *rx_pkt_out) {
     int ret;
+    int actual_length;
 
+    if (mutex_lock_interruptible(&dev->i2c_lock))
+        return -ERESTARTSYS;
+
+    /* Prepare transfer */
+    memcpy(dev->transfer_tx_buf, tx_pkt, sizeof(usb_packet_t));
     reinit_completion(&dev->i2c_done);
+    
+    /* Set callback destination to our dedicated heap buffer */
+    dev->current_rx_buf = dev->transfer_rx_buf; 
 
-    /* 1. Send command */
-    ret = picolink_send_packet(dev->udev, dev->bulk_out_endpointAddr, tx_pkt, sizeof(usb_packet_t));
-    if (ret < 0) {
-        dev_err(&dev->udev->dev, "Transfer: USB send failed: %d\n", ret);
-        return ret;
+    ret = usb_bulk_msg(dev->udev, 
+                       usb_sndbulkpipe(dev->udev, dev->bulk_out_endpointAddr),
+                       dev->transfer_tx_buf, sizeof(usb_packet_t), 
+                       &actual_length, 500);
+
+    if (ret == 0) {
+        if (wait_for_completion_timeout(&dev->i2c_done, msecs_to_jiffies(500))) {
+            /* Copy result out while under mutex protection */
+            memcpy(rx_pkt_out, dev->transfer_rx_buf, sizeof(usb_packet_t));
+            ret = 0;
+        } else {
+            ret = -ETIMEDOUT;
+        }
     }
 
-    /* 2. Wait for callback response (500ms timeout) */
-    if (!wait_for_completion_timeout(&dev->i2c_done, msecs_to_jiffies(500))) {
-        dev_err(&dev->udev->dev, "Transfer: Timeout waiting for Pico response!\n");
-        return -ETIMEDOUT;
-    }
-
-    /* 3. Copy result */
-    if (rx_pkt) {
-        memcpy(rx_pkt, &dev->i2c_resp, sizeof(usb_packet_t));
-    }
-
-    return 0;
+    dev->current_rx_buf = NULL; /* Protect against late/stray packets */
+    mutex_unlock(&dev->i2c_lock);
+    return ret;
 }
 EXPORT_SYMBOL_GPL(picolink_transfer);
 
 static int picolink_dev_open(struct inode *inode, struct file *file) {
-    /* Extract dev pointer via miscdevice struct */
+    /* Extract dev pointer via miscdevice struct and assign to private_data */
     struct miscdevice *mdev = file->private_data;
     struct picolink_dev *dev = container_of(mdev, struct picolink_dev, miscdev);
     
-    /* Set private_data so write() can access dev directly */
     file->private_data = dev; 
     
     if (!dev->udev) return -ENODEV;
@@ -507,6 +533,7 @@ static int picolink_probe(struct usb_interface *interface, const struct usb_devi
     struct usb_endpoint_descriptor *endpoint;
     int i, ret;
 
+    /* Base MFD cells registered upon device discovery */
     static struct mfd_cell base_cells[] = {
         { .name = "picolink-gpio" },
         { .name = "picolink-adc"  },
@@ -518,8 +545,17 @@ static int picolink_probe(struct usb_interface *interface, const struct usb_devi
     dev->udev = usb_get_dev(interface_to_usbdev(interface));
     dev->interface = interface;
     init_completion(&dev->i2c_done);
+    mutex_init(&dev->i2c_lock);
 
-    /* Search for endpoints */
+    /* Allocate DMA-safe buffers for synchronous transfers */
+    dev->transfer_tx_buf = kzalloc(sizeof(usb_packet_t), GFP_KERNEL);
+    dev->transfer_rx_buf = kzalloc(sizeof(usb_packet_t), GFP_KERNEL);
+    if (!dev->transfer_tx_buf || !dev->transfer_rx_buf) {
+        ret = -ENOMEM;
+        goto err_put;
+    }
+
+    /* Search for Bulk endpoints */
     iface_desc = interface->cur_altsetting;
     for (i = 0; i < iface_desc->desc.bNumEndpoints; i++) {
         endpoint = &iface_desc->endpoint[i].desc;
@@ -533,15 +569,15 @@ static int picolink_probe(struct usb_interface *interface, const struct usb_devi
 
     if (!dev->bulk_out_endpointAddr || !dev->bulk_in_endpointAddr) {
         ret = -ENODEV;
-        goto err_put;
+        goto err_free_tx;
     }
 
-    /* Setup read URB */
+    /* Setup continuous background read URB */
     dev->bulk_in_buffer = kmalloc(64, GFP_KERNEL);
     dev->read_urb = usb_alloc_urb(0, GFP_KERNEL);
     if (!dev->read_urb || !dev->bulk_in_buffer) {
         ret = -ENOMEM;
-        goto err_put;
+        goto err_free_tx;
     }
 
     usb_fill_bulk_urb(dev->read_urb, dev->udev,
@@ -551,37 +587,24 @@ static int picolink_probe(struct usb_interface *interface, const struct usb_devi
     
     usb_set_intfdata(interface, dev);
 
-    /* Register misc device */
+    /* Register control character device (/dev/picolink) */
     dev->miscdev.minor = MISC_DYNAMIC_MINOR;
     dev->miscdev.name = "picolink";
     dev->miscdev.fops = &picolink_fops;
     dev->miscdev.parent = &interface->dev;
-    dev->miscdev.this_device = &interface->dev;
     
     ret = misc_register(&dev->miscdev);
-    if (ret == -EEXIST) {
-        dev_err(&interface->dev, "CRITICAL: /dev/picolink already exists as a file. Please 'sudo rm /dev/picolink'\n");
-        goto err_free_urb;
-    }
+    if (ret) goto err_free_urb;
 
+    /* Register base MFD sub-devices */
     ret = mfd_add_devices(&interface->dev, PLATFORM_DEVID_AUTO, base_cells, ARRAY_SIZE(base_cells), NULL, 0, NULL);
     if (ret) goto err_misc;
 
-    // if (ret) {
-    //     dev_err(&interface->dev, "Failed to register misc dev, error %d.\n", ret);
-    //     goto err_free_misc;
-    // }
-
-    /* Start USB listener */
+    /* Start the background USB listener */
     ret = usb_submit_urb(dev->read_urb, GFP_KERNEL);
     if (ret) goto err_misc;
 
-    /* Register MFD cells */
-    // ret = mfd_add_devices(&interface->dev, PLATFORM_DEVID_AUTO,
-    //                       picolink_cells, ARRAY_SIZE(picolink_cells),
-    //                       NULL, 0, NULL);
-
-    dev_info(&interface->dev, "PicoLink MFD Ready. Use /dev/picolink to configure I2C/SPI/UART\n");
+    dev_info(&interface->dev, "PicoLink MFD Ready.\n");
     return 0;
 
 err_misc:
@@ -589,6 +612,8 @@ err_misc:
 err_free_urb:
     usb_free_urb(dev->read_urb);
     kfree(dev->bulk_in_buffer);
+err_free_tx:
+    kfree(dev->transfer_tx_buf);
 err_put:
     usb_put_dev(dev->udev);
     kfree(dev);
@@ -603,14 +628,14 @@ static void picolink_disconnect(struct usb_interface *interface) {
     if (!dev)
         return;
 
-    /* 1. Mark as disconnected immediately to block new URBs */
+    /* 1. Mark as disconnected immediately to block new URB submissions */
     dev->disconnected = true;
 
-    /* 2. Kill the main reader URB first */
+    /* 2. Kill the main reader URB */
     if (dev->read_urb)
         usb_kill_urb(dev->read_urb);
 
-    /* 3. Unregister LEDs while mutex is held */
+    /* 3. Unregister dynamically created LEDs */
     mutex_lock(&leds_lock);
     list_for_each_entry_safe(pled, tmp, &picolink_leds_list, node) {
         if (pled->mfd == dev) {
@@ -621,6 +646,7 @@ static void picolink_disconnect(struct usb_interface *interface) {
     }
     mutex_unlock(&leds_lock);
 
+    /* 4. Unregister dynamically created ADC channels */
     mutex_lock(&adcs_lock);
     list_for_each_entry_safe(achan, atmp, &picolink_adcs_list, node) {
         if (achan->mfd == dev) {
@@ -631,13 +657,13 @@ static void picolink_disconnect(struct usb_interface *interface) {
     }
     mutex_unlock(&adcs_lock);
 
-    /* 4. Remove child MFD devices (UART, I2C, GPIO) */
+    /* 5. Remove child MFD devices (UART, I2C, GPIO, SPI) */
     mfd_remove_devices(&interface->dev);
 
-    /* 5. Unregister the control node /dev/picolink */
+    /* 6. Unregister character device node */
     misc_deregister(&dev->miscdev);
 
-    /* 6. Final cleanup of device resources */
+    /* 7. Release core resources */
     usb_set_intfdata(interface, NULL);
     
     if (dev->read_urb)
@@ -674,7 +700,7 @@ static int __init picolink_init(void) {
     ret = picolink_tty_init();
     if (ret) goto err_tty;    
 
-    /* 2. Register platform drivers */
+    /* 2. Register all platform drivers for MFD cells */
     ret = platform_driver_register(&picolink_gpio_driver);
     if (ret) goto err_gpio;
 
@@ -690,11 +716,10 @@ static int __init picolink_init(void) {
     ret = platform_driver_register(&picolink_adc_driver);
     if (ret) goto err_usb;
 
+    /* 3. Register the USB driver to listen for hardware */
     ret = usb_register(&picolink_driver);
     if (ret) goto err_usb;
-    /* 3. Register USB driver */
-    // ret = usb_register(&picolink_driver);
-    // return usb_register(&picolink_driver);
+
     return 0;
     
 err_usb:
@@ -713,7 +738,7 @@ err_tty:
 }
 
 static void __exit picolink_exit(void) {
-    /* Unload in reverse order */
+    /* Unregister in reverse order of initialization */
     usb_deregister(&picolink_driver);
     platform_driver_unregister(&picolink_uart_driver);
     platform_driver_unregister(&picolink_i2c_driver);

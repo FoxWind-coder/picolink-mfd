@@ -23,50 +23,32 @@ struct picolink_spi {
 static int picolink_spi_setup(struct spi_device *spi)
 {
     struct picolink_spi *pspi = spi_controller_get_devdata(spi->controller);
-    usb_packet_t *pkt;
+    struct picolink_dev *mfd = pspi->mfd;
+    usb_packet_t pkt_out;
     spi_config_t *scfg;
     int ret;
 
-    pkt = kzalloc(sizeof(*pkt), GFP_KERNEL);
-    if (!pkt)
-        return -ENOMEM;
+    memset(&pkt_out, 0, sizeof(pkt_out));
+    scfg = (spi_config_t *)pkt_out.payload;
 
-    scfg = (spi_config_t *)pkt->payload;
+    pkt_out.header.type = CMD_TYPE_CONFIG;
+    pkt_out.header.iface_idx = IFACE_SPI;
+    pkt_out.header.length = sizeof(spi_config_t);
 
-    pkt->header.type = CMD_TYPE_CONFIG;
-    pkt->header.iface_idx = IFACE_SPI;
-    pkt->header.length = sizeof(spi_config_t);
-
-    /* Use 0xFF for pins to tell Pico firmware not to change pin mapping */
-    scfg->sck_pin = 0xFF;
+    // Keep default pin assignments
+    scfg->sck_pin = 0xFF; 
     scfg->mosi_pin = 0xFF;
     scfg->miso_pin = 0xFF;
     memset(scfg->cs_pins, 0xFF, 4);
 
     scfg->baudrate = spi->max_speed_hz;
-    
-    /* SPI mode: bit 0 = CPHA, bit 1 = CPOL */
     scfg->mode = (uint8_t)(spi->mode & (SPI_CPOL | SPI_CPHA));
 
-    dev_info(&pspi->mfd->udev->dev, 
-             "SPI Setup: speed=%u, mode=%u, CS=%d\n", 
-             scfg->baudrate, scfg->mode, 
-#if KERNEL_VERSION(6, 0, 0) <= LINUX_VERSION_CODE
-             spi->chip_select[0]
-#else
-             spi->chip_select
-#endif
-    );
-
-    /* Send packet without waiting for response (rx_pkt = NULL) */
-    ret = picolink_send_packet(pspi->mfd->udev, 
-                               pspi->mfd->bulk_out_endpointAddr, 
-                               pkt, sizeof(*pkt));
-
-    kfree(pkt);
+    /* Using picolink_transfer for mutex-protected atomic USB transaction */
+    ret = picolink_transfer(mfd, &pkt_out, mfd->transfer_rx_buf);
 
     if (ret < 0) {
-        dev_err(&pspi->mfd->udev->dev, "SPI Setup USB Error: %d\n", ret);
+        dev_err(&mfd->udev->dev, "SPI Setup Failed: %d\n", ret);
         return ret;
     }
 
@@ -81,48 +63,65 @@ void picolink_spi_remove_device(int index);
 static int picolink_spi_transfer_one(struct spi_controller *ctlr, struct spi_device *spi, struct spi_transfer *xfer)
 {
     struct picolink_spi *pspi = spi_controller_get_devdata(ctlr);
-    usb_packet_t *pkt_out, *pkt_in;
-    int ret;
-
-    pkt_out = kzalloc(sizeof(*pkt_out), GFP_KERNEL);
-    pkt_in = kzalloc(sizeof(*pkt_in), GFP_KERNEL);
-    if (!pkt_out || !pkt_in) {
-        ret = -ENOMEM;
-        goto out;
-    }
-
-    pkt_out->header.type = CMD_TYPE_DATA;
-    pkt_out->header.iface_idx = IFACE_SPI;
-    pkt_out->header.length = xfer->len + 1;
+    struct picolink_dev *mfd = pspi->mfd;
+    int ret = 0;
+    u32 total_len = xfer->len;
+    u32 sent = 0;
+    u8 cs_idx;
 
 #if KERNEL_VERSION(6, 0, 0) <= LINUX_VERSION_CODE
-    pkt_out->payload[0] = (uint8_t)spi->chip_select[0];
+    cs_idx = (uint8_t)spi->chip_select[0];
 #else
-    pkt_out->payload[0] = (uint8_t)spi->chip_select;
+    cs_idx = (uint8_t)spi->chip_select;
 #endif
-    
-    if (xfer->tx_buf)
-        memcpy(&pkt_out->payload[1], xfer->tx_buf, xfer->len);
 
-    // dev_info(&pspi->mfd->udev->dev, "SPI TX: len=%u, cs=%d, first_byte=0x%02x\n", 
-    //         xfer->len, pkt_out->payload[0], pkt_out->payload[1]);
+    while (sent < total_len) {
+        /* Use fixed 32-byte step for Pico firmware stability */
+        u32 chunk_len = (total_len - sent > 32) ? 32 : (total_len - sent);
+        
+        // 1. Prepare packet in MFD internal buffer
+        memset(mfd->transfer_tx_buf, 0, sizeof(usb_packet_t));
+        
+        mfd->transfer_tx_buf->header.type = CMD_TYPE_DATA;
+        mfd->transfer_tx_buf->header.iface_idx = IFACE_SPI;
+        
+        /* Payload length: 1 byte (CS control) + actual data */
+        mfd->transfer_tx_buf->header.length = chunk_len + 1;
+        
+        // CS Logic: Flag 0x80 tells Pico NOT to de-assert CS after this packet
+        mfd->transfer_tx_buf->payload[0] = cs_idx;
+        if (sent + chunk_len < total_len) {
+            mfd->transfer_tx_buf->payload[0] |= 0x80; 
+        }
 
-    ret = picolink_transfer(pspi->mfd, pkt_out, pkt_in);
+        // Copy TX data
+        if (xfer->tx_buf)
+            memcpy(&mfd->transfer_tx_buf->payload[1], xfer->tx_buf + sent, chunk_len);
+        else
+            memset(&mfd->transfer_tx_buf->payload[1], 0, chunk_len);
 
-    if (ret) {
-        dev_err(&pspi->mfd->udev->dev, "SPI Transfer USB Error: %d\n", ret);
+        // 2. Atomic USB transfer
+        ret = picolink_transfer(mfd, mfd->transfer_tx_buf, mfd->transfer_rx_buf);
+        
+        if (ret < 0) {
+            dev_err(&mfd->udev->dev, "SPI USB Transfer Failed: %d (sent %d/%d)\n", 
+                    ret, sent, total_len);
+            break;
+        }
+
+        // 3. Copy received RX data to Linux buffer
+        if (xfer->rx_buf) {
+            memcpy(xfer->rx_buf + sent, mfd->transfer_rx_buf->payload, chunk_len);
+        }
+
+        sent += chunk_len;
     }
-    
-    if (ret == 0 && xfer->rx_buf && pkt_in->header.length > 0) {
-        memcpy(xfer->rx_buf, pkt_in->payload, xfer->len);
-    }
 
-out:
-    kfree(pkt_out);
-    kfree(pkt_in);
     spi_finalize_current_transfer(ctlr);
     return ret;
 }
+
+
 
 int picolink_spi_add_device(struct picolink_dev *mfd, int index, int pin)
 {
@@ -147,7 +146,7 @@ int picolink_spi_add_device(struct picolink_dev *mfd, int index, int pin)
         return -ENOMEM;
     }
 
-    /* Programmatically set driver override to allow automatic spidev binding */
+    /* Set driver override to allow automatic spidev binding */
     spi->driver_override = kstrdup("spidev", GFP_KERNEL);
 
     if (device_attach(&spi->dev) < 0) {
@@ -156,7 +155,7 @@ int picolink_spi_add_device(struct picolink_dev *mfd, int index, int pin)
     }
 
     g_spi->cs_devs[index] = spi;
-    dev_info(&mfd->udev->dev, "SPI: Device spi%d.%d registered automatically\n", 
+    dev_info(&mfd->udev->dev, "SPI: Device spi%d.%d registered\n", 
              g_spi->ctlr->bus_num, index);
              
     return 0;
