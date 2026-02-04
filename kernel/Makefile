@@ -10,7 +10,7 @@ OBJS := $(SRCS:.c=.o)
 all:
 	@mkdir -p $(BUILD_DIR)
 	
-	# 1. Generate Kbuild file on-the-fly inside the build directory
+	# 1. Generate Kbuild file on-the-fly inside this build directory
 	@echo "obj-m := $(MODULE_NAME).o" > $(BUILD_DIR)/Kbuild
 	@echo "$(MODULE_NAME)-objs := $(OBJS)" >> $(BUILD_DIR)/Kbuild
 	@echo "ccflags-y := -I$(PWD) -I$(PROJECT_ROOT) -Wno-error=incompatible-pointer-types" >> $(BUILD_DIR)/Kbuild
