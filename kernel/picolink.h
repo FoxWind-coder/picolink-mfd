@@ -42,6 +42,19 @@ struct picolink_uart {
     atomic_t active_urbs;
 };
 
+struct picolink_servo {
+    uint8_t pin;
+    uint16_t range;
+    struct picolink_dev *mfd;
+    struct device *dev; // Для sysfs, если понадобится
+    struct list_head node;
+};
+
+// Прототипы функций (добавить к остальным)
+int picolink_servo_cmd_config(struct picolink_dev *dev, uint8_t pin, uint16_t range);
+int picolink_servo_cmd_set(struct picolink_dev *dev, uint8_t pin, uint16_t angle);
+void picolink_servos_cleanup(struct picolink_dev *dev);
+
 int picolink_send_packet(struct usb_device *udev, uint8_t endpoint, void *data, int len);
 int picolink_transfer(struct picolink_dev *dev, usb_packet_t *tx_pkt, usb_packet_t *rx_pkt);
 #endif

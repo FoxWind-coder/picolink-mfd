@@ -8,6 +8,8 @@
 #include "picolink.h"
 #include "mfd-pwm.h"
 
+extern struct class *picolink_servo_class;
+
 /* Структура для управления одним LED */
 struct picolink_led {
     struct led_classdev cdev;
@@ -27,6 +29,29 @@ struct picolink_pwm_chip {
 static LIST_HEAD(picolink_leds_list);
 static DEFINE_MUTEX(leds_lock);
 
+extern struct list_head picolink_servos_list;
+extern struct mutex servos_lock;
+
+void picolink_servos_cleanup(struct picolink_dev *dev) {
+    struct picolink_servo *servo, *tmp;
+
+    mutex_lock(&servos_lock);
+    list_for_each_entry_safe(servo, tmp, &picolink_servos_list, node) {
+        if (servo->mfd == dev) {
+            list_del(&servo->node);
+            if (servo->dev) {
+                // Используем destroy для устройств, созданных через device_create
+                // device_destroy(picolink_servo_class, MKDEV(0, 0));
+                device_unregister(servo->dev);
+            }
+            kfree(servo);
+        }
+    }
+    mutex_unlock(&servos_lock);
+}
+EXPORT_SYMBOL_GPL(picolink_servos_cleanup);
+
+
 /* * ==========================================
  * Helper: USB Transmission for PWM/LED 
  * ==========================================
@@ -34,6 +59,134 @@ static DEFINE_MUTEX(leds_lock);
 static void picolink_pwm_urb_complete(struct urb *urb) {
     kfree(urb->context);
     usb_free_urb(urb);
+}
+
+static void picolink_servo_urb_complete(struct urb *urb) {
+    kfree(urb->context);
+    usb_free_urb(urb);
+}
+
+static int picolink_send_servo_packet(struct picolink_dev *dev, usb_packet_t *pkt) {
+    struct urb *urb;
+    int ret;
+
+    if (!dev || dev->disconnected) {
+        kfree(pkt);
+        return -ENODEV;
+    }
+
+    urb = usb_alloc_urb(0, GFP_ATOMIC);
+    if (!urb) {
+        kfree(pkt);
+        return -ENOMEM;
+    }
+
+    usb_fill_bulk_urb(urb, dev->udev,
+                      usb_sndbulkpipe(dev->udev, dev->bulk_out_endpointAddr),
+                      pkt, sizeof(*pkt),
+                      picolink_servo_urb_complete, pkt);
+
+    ret = usb_submit_urb(urb, GFP_ATOMIC);
+    if (ret) {
+        usb_free_urb(urb);
+        kfree(pkt);
+    }
+    return ret;
+}
+
+static ssize_t angle_store(struct device *dev, struct device_attribute *attr, const char *buf, size_t count) {
+    struct picolink_servo *servo = dev_get_drvdata(dev);
+    unsigned int angle;
+    
+    if (kstrtouint(buf, 10, &angle)) return -EINVAL;
+    if (angle > 1000) angle = 1000; // Разумный предел
+
+    // Просто шлем пакет. Pico теперь не отвечает на него, 
+    // так что наш Bulk-IN поток останется чистым для логов.
+    picolink_servo_cmd_set(servo->mfd, servo->pin, (uint16_t)angle);
+    
+    return count;
+}
+
+static DEVICE_ATTR_WO(angle); // Создает структуру dev_attr_angle (только на запись)
+
+static struct attribute *servo_attrs[] = {
+    &dev_attr_angle.attr,
+    NULL,
+};
+ATTRIBUTE_GROUPS(servo);
+
+int picolink_servo_cmd_config(struct picolink_dev *dev, uint8_t pin, uint16_t range) {
+    struct picolink_servo *servo;
+    usb_packet_t *pkt;
+    bool exists = false;
+
+    /* 1. Поиск существующего или создание нового устройства в sysfs */
+    mutex_lock(&servos_lock);
+    list_for_each_entry(servo, &picolink_servos_list, node) {
+        if (servo->mfd == dev && servo->pin == pin) {
+            servo->range = range;
+            exists = true;
+            break;
+        }
+    }
+    
+    if (!exists) {
+        servo = kzalloc(sizeof(*servo), GFP_KERNEL);
+        if (!servo) {
+            mutex_unlock(&servos_lock);
+            return -ENOMEM;
+        }
+        servo->pin = pin;
+        servo->range = range;
+        servo->mfd = dev;
+
+        servo->dev = device_create_with_groups(picolink_servo_class, 
+                                              &dev->udev->dev, 
+                                              MKDEV(0, 0), 
+                                              servo, 
+                                              servo_groups, 
+                                              "servo%d", pin);
+        if (IS_ERR(servo->dev)) {
+            int err = PTR_ERR(servo->dev);
+            kfree(servo);
+            mutex_unlock(&servos_lock);
+            return err;
+        }
+        list_add(&servo->node, &picolink_servos_list);
+    }
+    mutex_unlock(&servos_lock);
+
+    /* 2. Подготовка пакета конфигурации для Pico */
+    pkt = kzalloc(sizeof(*pkt), GFP_KERNEL);
+    if (!pkt) return -ENOMEM;
+
+    pkt->header.type = CMD_TYPE_CONFIG;
+    pkt->header.iface_idx = IFACE_SERVO;
+    pkt->header.length = sizeof(servo_config_t);
+    
+    servo_config_t *cfg = (servo_config_t *)pkt->payload;
+    cfg->pin = pin;
+    cfg->min_us = 500;
+    cfg->max_us = 2500;
+    cfg->range = range;
+
+    return picolink_send_servo_packet(dev, pkt);
+}
+
+int picolink_servo_cmd_set(struct picolink_dev *dev, uint8_t pin, uint16_t angle) {
+    usb_packet_t *pkt = kzalloc(sizeof(*pkt), GFP_ATOMIC);
+    if (!pkt) return -ENOMEM;
+
+    pkt->header.type = CMD_TYPE_DATA;
+    pkt->header.iface_idx = IFACE_SERVO;
+    pkt->header.length = 3; // pin + uint16_t value
+    
+    pkt->payload[0] = pin;
+    pkt->payload[1] = angle & 0xFF;
+    pkt->payload[2] = (angle >> 8) & 0xFF;
+
+    return picolink_send_servo_packet(dev, pkt);
 }
 
 static int picolink_send_pwm_cmd(struct picolink_dev *dev, uint8_t pin, uint16_t value) {
@@ -283,11 +436,11 @@ static int picolink_pwm_probe(struct platform_device *pdev) {
     return 0;
 }
 
-static int picolink_pwm_remove(struct platform_device *pdev) {
+static void picolink_pwm_remove(struct platform_device *pdev) {
     // struct picolink_pwm_chip *pchip = platform_get_drvdata(pdev);
     // pwmchip_remove(&pchip->chip);
     // struct pwm_chip *chip = platform_get_drvdata(pdev);
-    return 0;
+    // return 0;
 }
 
 struct platform_driver picolink_pwm_driver = {

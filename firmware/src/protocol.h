@@ -34,8 +34,16 @@ typedef enum {
     IFACE_SPI  = 0x02,
     IFACE_UART = 0x03,
     IFACE_ADC  = 0x04,
-    IFACE_PWM  = 0x05
+    IFACE_PWM  = 0x05,
+    IFACE_SERVO = 0x06
 } iface_type_t;
+
+typedef struct __attribute__((packed)) {
+    uint8_t pin;
+    uint16_t min_us;   // Обычно 500-1000 (0 градусов)
+    uint16_t max_us;   // Обычно 2000-2500 (180 градусов)
+    uint16_t range;    // Диапазон в градусах (обычно 180 или 270)
+} servo_config_t;
 
 typedef struct __attribute__((packed)) {
     uint32_t baudrate;

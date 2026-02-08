@@ -22,6 +22,13 @@
 
 static LIST_HEAD(picolink_adcs_list);
 static DEFINE_MUTEX(adcs_lock);
+struct class *picolink_servo_class;
+EXPORT_SYMBOL_GPL(picolink_servo_class);
+
+LIST_HEAD(picolink_servos_list);
+DEFINE_MUTEX(servos_lock);
+EXPORT_SYMBOL_GPL(picolink_servos_list);
+EXPORT_SYMBOL_GPL(servos_lock);
 
 /* Reference to platform drivers */
 extern struct platform_driver picolink_gpio_driver;
@@ -74,6 +81,14 @@ static void picolink_bulk_in_callback(struct urb *urb) {
         else if (pkt->header.iface_idx == IFACE_UART) {
             if (pkt->header.type == CMD_TYPE_RESP || pkt->header.type == CMD_TYPE_DATA) {
                 if (len > 0) picolink_uart_push_data(pkt->payload, len);
+            }
+        }else if (pkt->header.iface_idx == IFACE_SERVO) {
+            // Просто подтверждаем выполнение, чтобы разблокировать ожидающих (если они есть)
+            usb_packet_t *dest = dev->current_rx_buf; 
+            if (dest) {
+                memcpy(dest, pkt, sizeof(usb_packet_t));
+                dev->current_rx_buf = NULL; 
+                complete(&dev->i2c_done);
             }
         }
         else if (pkt->header.iface_idx == IFACE_I2C || 
@@ -300,6 +315,55 @@ static ssize_t picolink_dev_write(struct file *file, const char __user *buf, siz
             }
         }
     }
+        else if (strncmp(kbuf, "servo", 5) == 0) {
+            int pin, val;
+            
+            // Обработка "servoX disable"
+            if (strstr(kbuf, "disable")) {
+                if (sscanf(kbuf, "servo%d disable", &pin) == 1) {
+                    struct picolink_servo *servo, *tmp;
+                    
+                    pkt->header.type = CMD_TYPE_DISABLE;
+                    pkt->header.iface_idx = IFACE_SERVO;
+                    pkt->payload[0] = (uint8_t)pin;
+                    picolink_send_packet(dev->udev, dev->bulk_out_endpointAddr, pkt, sizeof(*pkt));
+
+                    mutex_lock(&servos_lock);
+                    list_for_each_entry_safe(servo, tmp, &picolink_servos_list, node) {
+                        if (servo->pin == (uint8_t)pin) {
+                            device_unregister(servo->dev);
+                            list_del(&servo->node);
+                            kfree(servo);
+                        }
+                    }
+                    mutex_unlock(&servos_lock);
+                    dev_info(&dev->udev->dev, "Servo on pin %d disabled\n", pin);
+                }
+            } 
+            // Обработка "servoX Y" (Установка угла или инициализация)
+            else if (sscanf(kbuf, "servo%d %d", &pin, &val) == 2) {
+                struct picolink_servo *servo;
+                bool found = false;
+
+                mutex_lock(&servos_lock);
+                list_for_each_entry(servo, &picolink_servos_list, node) {
+                    if (servo->pin == (uint8_t)pin) {
+                        found = true;
+                        break;
+                    }
+                }
+                mutex_unlock(&servos_lock);
+
+                if (!found) {
+                    // Если серво еще не инициализирован, считаем Y за Range (диапазон)
+                    picolink_servo_cmd_config(dev, (uint8_t)pin, (uint16_t)val);
+                    dev_info(&dev->udev->dev, "Servo initialized on pin %d (Range: %d)\n", pin, val);
+                } else {
+                    // Если уже есть в списке, Y - это угол
+                    picolink_servo_cmd_set(dev, (uint8_t)pin, (uint16_t)val);
+                }
+            }
+        }
     kfree(pkt);
     return count;
 }
@@ -451,6 +515,7 @@ static void picolink_disconnect(struct usb_interface *interface) {
      * and picolink-pwm driver's remove() handles chip removal,
      * we explicitly clean up manually created LEDs here to be safe.
      */
+    picolink_servos_cleanup(dev);
     picolink_leds_cleanup(dev);
 
     /* Manual ADC cleanup (still here as per instructions to only move LED/PWM) */
@@ -494,6 +559,12 @@ static struct usb_driver picolink_driver = {
 
 static int __init picolink_init(void) {
     int ret;
+
+    picolink_servo_class = class_create("pico-servo"); // Для ядра 6.4+ аргумент один
+    if (IS_ERR(picolink_servo_class)) {
+        pr_err("Failed to create servo class\n");
+        return PTR_ERR(picolink_servo_class); // <--- ОБЯЗАТЕЛЬНО вернуть код ошибки
+    }
 
     ret = picolink_tty_init();
     if (ret) goto err_tty;    
@@ -548,6 +619,9 @@ static void __exit picolink_exit(void) {
     platform_driver_unregister(&picolink_gpio_driver);
     platform_driver_unregister(&picolink_adc_driver);
     platform_driver_unregister(&picolink_spi_driver);
+    // class_destroy(picolink_servo_class);
+    if (picolink_servo_class)
+        class_destroy(picolink_servo_class);
     picolink_tty_exit();
 }
 

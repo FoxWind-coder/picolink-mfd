@@ -11,6 +11,7 @@
 #include "i2c_handler.h"
 #include "uart_handler.h"
 #include "spi_handler.h"
+#include "servo_handler.h"
 #include "hardware/pwm.h"
 #include "hardware/adc.h"
 #include "hardware/spi.h"
@@ -150,8 +151,14 @@ void core1_entry() {
                 tud_vendor_write_flush();
                 mutex_exit(&usb_mutex);
             }
-        } 
-
+        } else if (hdr->iface_idx == IFACE_SERVO) {
+            // Выводим: Тип, Длину, и первые 4 байта payload в HEX
+            picolink_log("SRV RX: t=%d l=%d d=%02x %02x %02x %02x", 
+                        hdr->type, hdr->length, 
+                        pkt.payload[0], pkt.payload[1], pkt.payload[2], pkt.payload[3]);
+            
+            picolink_servo_handle(&pkt);
+        }
         // --- PWM/LED Interface ---
         else if (hdr->iface_idx == IFACE_PWM) {
             picolink_pwm_handle(&pkt);
@@ -192,10 +199,15 @@ int main() {
 
     while (1) {
         // TinyUSB is mostly thread-safe internally, but we use a mutex for data writes
+        // mutex_enter_blocking(&usb_mutex);
         tud_task(); 
+        // mutex_exit(&usb_mutex);
         
         // Push any asynchronous UART data collected in IRQs to the USB host
+        // picolink_process_responses();
+        // mutex_enter_blocking(&usb_mutex);
         picolink_uart_flush_to_usb();
+        // mutex_exit(&usb_mutex);
         
         tight_loop_contents();
     }
@@ -206,13 +218,17 @@ int main() {
  * TinyUSB Callback: Triggered when host sends data to the vendor interface
  */
 void tud_vendor_rx_cb(uint8_t itf, uint8_t const* buffer, uint16_t bufsize) {
-    usb_packet_t rx_pkt;
-    // If data was received and the queue has room
-    if (bufsize > 0 && !queue_is_full(&packet_queue)) {
-        memset(&rx_pkt, 0, sizeof(rx_pkt));
-        // Copy received data, capping at the size of the packet structure
-        uint16_t to_read = (bufsize > sizeof(rx_pkt)) ? sizeof(rx_pkt) : bufsize;
-        tud_vendor_read(&rx_pkt, to_read);
-        queue_try_add(&packet_queue, &rx_pkt);
+    // Читаем, пока в FIFO TinyUSB есть данные для хотя бы одного пакета
+    while (tud_vendor_available() >= sizeof(usb_packet_t)) {
+        usb_packet_t rx_pkt;
+        if (!queue_is_full(&packet_queue)) {
+            uint32_t read_bytes = tud_vendor_read(&rx_pkt, sizeof(rx_pkt));
+            if (read_bytes == sizeof(rx_pkt)) {
+                queue_try_add(&packet_queue, &rx_pkt);
+            }
+        } else {
+            // Очередь полна — это плохо, нужно логировать (хотя бы в консоль)
+            break; 
+        }
     }
 }

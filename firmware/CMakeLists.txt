@@ -18,6 +18,7 @@ add_executable(picolink_mfd
     src/uart_handler.c
     src/pwm_handler.c
     src/spi_handler.c
+    src/servo_handler.c
 )
 
 # Link TinyUSB and standard libraries
