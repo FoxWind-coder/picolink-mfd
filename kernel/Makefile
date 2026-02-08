@@ -4,7 +4,7 @@ PWD := $(shell pwd)
 BUILD_DIR := $(PWD)/build
 PROJECT_ROOT := $(shell realpath $(PWD)/..)
 
-SRCS := core.c mfd-gpio.c mfd-i2c.c mfd-uart.c mfd-adc.c mfd-spi.c
+SRCS := core.c mfd-gpio.c mfd-i2c.c mfd-uart.c mfd-adc.c mfd-spi.c mfd-pwm.c
 OBJS := $(SRCS:.c=.o)
 
 all:

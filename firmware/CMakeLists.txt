@@ -16,6 +16,7 @@ add_executable(picolink_mfd
     src/hardware_map.c
     src/i2c_handler.c
     src/uart_handler.c
+    src/pwm_handler.c
     src/spi_handler.c
 )
 

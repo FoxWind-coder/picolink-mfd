@@ -62,6 +62,14 @@ typedef struct __attribute__((packed)) {
 } spi_config_t;
 
 typedef struct __attribute__((packed)) {
+    uint8_t pin;
+    uint16_t clkdiv_int;  // Целая часть делителя
+    uint8_t clkdiv_frac;   // Дробная часть (0-15)
+    uint16_t wrap;         // Значение переполнения
+    uint8_t options;       // bit 0: phase_correct, bit 1: invert_A, bit 2: invert_B
+} pwm_config_t;
+
+typedef struct __attribute__((packed)) {
     uint8_t type;       // Command type (cmd_type_t)
     uint8_t iface_idx;  // Target interface (iface_type_t)
     uint16_t length;    // Payload data length

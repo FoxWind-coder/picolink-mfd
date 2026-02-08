@@ -27,6 +27,7 @@ struct picolink_dev {
     bool spi_registered;
     bool uart_registered;
     struct mutex i2c_lock;       
+    bool pwm_registered;
     usb_packet_t *current_rx_buf;  
 
 };

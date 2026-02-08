@@ -5,6 +5,7 @@
 #include "pico/stdlib.h"
 #include "pico/multicore.h"
 #include "pico/util/queue.h"
+#include "pwm_handler.h"
 #include "tusb.h"
 #include "protocol.h"
 #include "i2c_handler.h"
@@ -68,9 +69,10 @@ void core1_entry() {
                     picolink_uart_disable();
                     break;
                 case IFACE_PWM:
-                    // Reset specific pins back to SIO/GPIO mode if needed
+                    picolink_pwm_handle(&pkt);
                     break;
             }
+            continue;
         }
 
         // --- I2C Interface ---
@@ -152,29 +154,7 @@ void core1_entry() {
 
         // --- PWM/LED Interface ---
         else if (hdr->iface_idx == IFACE_PWM) {
-            uint8_t pin = pkt.payload[0];
-            if (pin >= 30) continue;
-
-            if (hdr->type == CMD_TYPE_CONFIG) {
-                gpio_set_function(pin, GPIO_FUNC_PWM);
-                uint slice_num = pwm_gpio_to_slice_num(pin);
-                
-                pwm_set_clkdiv(slice_num, 125.0f); 
-                pwm_set_wrap(slice_num, 1000); 
-                pwm_set_enabled(slice_num, true);
-                picolink_log("PWM/LED Init: GP%d\n", pin);
-            }
-            else if (hdr->type == CMD_TYPE_DATA) {
-                uint8_t val8 = pkt.payload[1]; // Linux brightness 0-255
-                
-                // Scale 0-255 to 0-1000 using quadratic mapping for visual smoothness
-                uint32_t duty = (uint32_t)val8 * val8 * 1000 / 65025;
-                pwm_set_gpio_level(pin, (uint16_t)duty);
-            }
-            else if (hdr->type == CMD_TYPE_DISABLE) {
-                gpio_set_function(pin, GPIO_FUNC_SIO);
-                picolink_log("PWM/LED Released: GP%d\n", pin);
-            }
+            picolink_pwm_handle(&pkt);
         }
         
         else if (hdr->iface_idx == IFACE_SPI) {
