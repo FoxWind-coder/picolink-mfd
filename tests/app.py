@@ -2,160 +2,200 @@ HTML_TEMPLATE = """
 <!DOCTYPE html>
 <html>
 <head>
-    <title>Pico Control Panel</title>
+    <title>Pico Control Panel PRO</title>
     <style>
-        body { font-family: 'Segoe UI', Tahoma, Geneva, Verdana, sans-serif; background: #121212; color: #e0e0e0; display: flex; gap: 20px; padding: 20px; margin: 0; }
-        .column { flex: 1; background: #1e1e1e; padding: 20px; border-radius: 12px; border: 1px solid #333; box-shadow: 0 4px 15px rgba(0,0,0,0.5); }
-        h2 { border-bottom: 2px solid #007bff; padding-bottom: 10px; margin-top: 0; font-weight: 300; }
-        .item { background: #252525; margin: 12px 0; padding: 15px; border-radius: 8px; border-left: 4px solid #007bff; }
-        .servo-grid { display: grid; grid-template-columns: 1fr 1fr; gap: 10px; align-items: center; }
-        .label { font-weight: bold; color: #aaa; font-size: 0.9em; }
-        .value { font-family: monospace; color: #00ff00; font-size: 1.1em; }
+        body { font-family: 'Segoe UI', sans-serif; background: #121212; color: #e0e0e0; display: flex; gap: 20px; padding: 20px; margin: 0; height: 100vh; box-sizing: border-box; }
+        .column { flex: 1; background: #1e1e1e; padding: 15px; border-radius: 12px; border: 1px solid #333; display: flex; flex-direction: column; overflow: hidden; }
+        h2 { border-bottom: 2px solid #007bff; padding-bottom: 10px; margin: 0 0 15px 0; font-size: 1.2em; }
         
-        input[type="number"], input[type="text"] { background: #333; color: #fff; border: 1px solid #444; padding: 8px; border-radius: 4px; width: 60px; }
-        input[type="text"] { width: 100%; box-sizing: border-box; }
+        .scroll-area { flex-grow: 1; overflow-y: auto; padding-right: 5px; }
+        .item { background: #252525; margin-bottom: 10px; padding: 12px; border-radius: 8px; border-left: 4px solid #007bff; }
         
-        button { cursor: pointer; background: #007bff; color: white; border: none; padding: 8px 15px; border-radius: 4px; transition: 0.2s; }
-        button:hover { background: #0056b3; }
+        .servo-grid { display: grid; grid-template-columns: 70px 1fr 100px; gap: 10px; align-items: center; }
+        .group-control { background: #1a3a5a; padding: 15px; border-radius: 8px; margin-top: 10px; }
         
-        .hw-item { display: flex; justify-content: space-between; border-bottom: 1px solid #333; padding: 8px 0; }
-        .terminal-box { margin-top: 20px; }
-        .status-dot { height: 10px; width: 10px; border-radius: 50%; display: inline-block; margin-right: 5px; }
+        /* HWMON Styles */
+        .hw-item { background: #2a2a2a; padding: 10px; margin-bottom: 8px; border-radius: 6px; }
+        .hw-row { display: flex; justify-content: space-between; margin-bottom: 5px; }
+        .formula-input { width: 100%; background: #121212; color: #00ff00; border: 1px solid #444; font-family: monospace; padding: 3px; font-size: 0.8em; }
+        .raw-val { color: #666; font-size: 0.7em; }
+
+        input[type="range"] { width: 100%; cursor: pointer; }
+        input[type="number"], input[type="text"] { background: #333; color: #fff; border: 1px solid #444; border-radius: 4px; padding: 4px; }
+        button { cursor: pointer; background: #007bff; color: white; border: none; padding: 6px 12px; border-radius: 4px; }
+        .value { font-family: monospace; color: #00ff00; font-weight: bold; }
     </style>
 </head>
 <body>
 
 <div class="column">
-    <h2>Servos Control</h2>
-    <div id="servos-list"></div>
-</div>
-
-<div class="column">
-    <h2>System Health (hwmon)</h2>
-    <div id="hwmon-list"></div>
-</div>
-
-<div class="column">
-    <h2>PicoLink Terminal</h2>
-    <div id="picolink-status" style="margin-bottom: 15px;"></div>
-    <div class="terminal-box">
-        <input type="text" id="cmd-input" placeholder="Type command here...">
-        <button onclick="sendCmd()" style="width: 100%; margin-top: 10px;">Send to /dev/picolink</button>
+    <h2>Servos</h2>
+    <div class="scroll-area" id="servos-list"></div>
+    
+    <div class="group-control">
+        <div style="display: flex; justify-content: space-between;">
+            <span class="label">GROUP SYNC</span>
+            <span class="value" id="group-val">90°</span>
+        </div>
+        <input type="range" min="0" max="180" value="90" oninput="applyGroup(this.value)">
     </div>
 </div>
 
+<div class="column">
+    <div style="display: flex; justify-content: space-between; align-items: center; border-bottom: 2px solid #007bff; margin-bottom: 15px;">
+        <h2 style="border:none; margin:0;">Health</h2>
+        <div style="font-size: 0.8em;">
+            Update: <input type="number" id="update-rate" value="2" style="width: 40px;">s
+        </div>
+    </div>
+    <div class="scroll-area" id="hwmon-list"></div>
+</div>
+
+<div class="column" style="max-width: 300px;">
+    <h2>PicoLink</h2>
+    <div id="picolink-status" style="margin-bottom: 10px;"></div>
+    <input type="text" id="cmd-input" placeholder="Command..." style="width: 100%; box-sizing: border-box;">
+    <button onclick="sendCmd()" style="width: 100%; margin-top: 10px;">Send</button>
+</div>
+
 <script>
+let lastRequestTime = 0;
+const THROTTLE_MS = 30; // Лимит отправки - 33 кадра в секунду
+const hwConfigs = {}; // Храним формулы здесь
+
+// Функция безопасного вычисления формулы
+function calculate(formula, x) {
+    try {
+        // Заменяем 'x' на значение и вычисляем. 
+        // В продакшене лучше использовать кастомный парсер, но для отладки eval сойдет.
+        return eval(formula.replace(/x/g, x)).toFixed(2);
+    } catch (e) { return "Err"; }
+}
+
 async function updateData() {
     try {
         const res = await fetch('/api/data');
         const data = await res.json();
 
+        // Обновление Сервоприводов
         const servoList = document.getElementById('servos-list');
-
         data.servos.forEach(s => {
             let item = document.getElementById(`servo-container-${s.id}`);
-            
-            // Если такого серво еще нет на странице — создаем структуру целиком
             if (!item) {
-                const newElem = document.createElement('div');
-                newElem.id = `servo-container-${s.id}`;
-                newElem.className = 'item';
-                newElem.innerHTML = `
-                    <div style="margin-bottom: 10px; font-weight: bold; color: #007bff;">${s.id.toUpperCase()}</div>
-                    <div class="servo-grid">
-                        <div>
-                            <span class="label">LAST SENT:</span><br>
-                            <span class="value" id="val-${s.id}">${s.target}°</span>
-                        </div>
-                        <div>
-                            <span class="label">SET NEW:</span><br>
-                            <input type="number" id="inp-${s.id}" placeholder="0-180">
-                            <button onclick="setAngle('${s.id}')">GO</button>
-                        </div>
+                const div = document.createElement('div');
+                div.id = `servo-container-${s.id}`;
+                div.className = 'item';
+                div.innerHTML = `
+                    <div style="display:flex; justify-content:space-between; margin-bottom:5px;">
+                        <b style="color:#007bff">${s.id.toUpperCase()}</b>
+                        <label style="font-size:0.7em"><input type="checkbox" class="servo-sync" data-id="${s.id}"> Sync</label>
                     </div>
-                `;
-                servoList.appendChild(newElem);
+                    <div class="servo-grid">
+                        <span class="value" id="val-${s.id}">${s.target}°</span>
+                        <input type="range" id="range-${s.id}" min="0" max="180" value="${s.target}" 
+                               oninput="setAngle('${s.id}', this.value)">
+                        <input type="number" id="inp-${s.id}" value="${s.target}" min="0" max="180" 
+                               oninput="setAngle('${s.id}', this.value)">
+                    </div>`;
+                servoList.appendChild(div);
             } else {
-                // Если серво уже есть — обновляем ТОЛЬКО значение угла
-                const valSpan = document.getElementById(`val-${s.id}`);
-                if (valSpan && valSpan.innerText !== s.target + "°") {
-                    valSpan.innerText = s.target + "°";
-                }
+                document.getElementById(`val-${s.id}`).innerText = s.target + "°";
+                const r = document.getElementById(`range-${s.id}`);
+                const n = document.getElementById(`inp-${s.id}`);
+                if (document.activeElement !== r) r.value = s.target;
+                if (document.activeElement !== n) n.value = s.target;
             }
         });
 
-        // Удаление пропавших сервоприводов
-        const activeIds = data.servos.map(s => `servo-container-${s.id}`);
-        Array.from(servoList.children).forEach(child => {
-            if (!activeIds.includes(child.id)) {
-                child.remove();
+        // Обновление HWMON
+        const hwList = document.getElementById('hwmon-list');
+        data.hwmon.forEach(h => {
+            const safeId = h.name.replace(/[^a-z0-9]/gi, '_');
+            if (!hwConfigs[safeId]) {
+                // Дефолтная формула
+                let def = "x";
+                if (h.name.toLowerCase().includes("thermal")) def = "x / 1000";
+                else if (h.value <= 1024) def = "x * (3.3 / 1023)";
+                hwConfigs[safeId] = def;
+            }
+
+            let item = document.getElementById(`hw-container-${safeId}`);
+            const calculatedValue = calculate(hwConfigs[safeId], h.value);
+
+            if (!item) {
+                const div = document.createElement('div');
+                div.id = `hw-container-${safeId}`;
+                div.className = 'hw-item';
+                div.innerHTML = `
+                    <div class="hw-row">
+                        <small>${h.name}</small>
+                        <span class="value" id="calc-${safeId}">${calculatedValue}</span>
+                    </div>
+                    <div class="hw-row">
+                        <span class="raw-val">Raw: ${h.value}</span>
+                        <input type="text" class="formula-input" value="${hwConfigs[safeId]}" 
+                               oninput="hwConfigs['${safeId}']=this.value" placeholder="Formula (ex: x/1000)">
+                    </div>`;
+                hwList.appendChild(div);
+            } else {
+                document.getElementById(`calc-${safeId}`).innerText = calculatedValue;
+                item.querySelector('.raw-val').innerText = "Raw: " + h.value;
             }
         });
 
-        // Обновление Датчиков (их можно обновлять целиком, там нет инпутов)
-        const hwDiv = document.getElementById('hwmon-list');
-        hwDiv.innerHTML = data.hwmon.map(h => `
-            <div class="hw-item">
-                <span>${h.name}</span>
-                <span class="value">${h.value}</span>
-            </div>
-        `).join('');
+        document.getElementById('picolink-status').innerHTML = data.picolink ? '<span style="color:green">● Picolink Online</span>' : '<span style="color:red">○ Picolink Offline</span>';
 
-        // Статус Picolink
-        const pStatus = document.getElementById('picolink-status');
-        pStatus.innerHTML = data.picolink 
-            ? '<span class="status-dot" style="background: #28a745;"></span> <span style="color: #28a745;">/dev/picolink Online</span>'
-            : '<span class="status-dot" style="background: #dc3545;"></span> <span style="color: #dc3545;">/dev/picolink Offline</span>';
-
-    } catch (e) { console.error("Update error:", e); }
+    } catch (e) { console.log(e); }
+    
+    // Рекурсивный вызов с динамическим интервалом
+    const interval = document.getElementById('update-rate').value || 2;
+    setTimeout(updateData, interval * 1000);
 }
 
-async function setAngle(id) {
-    const input = document.getElementById('inp-' + id);
-    const angle = input.value;
-    if (angle === "") return;
+async function setAngle(id, angle) {
+    const now = Date.now();
+    // Обновляем UI мгновенно для плавности
+    document.getElementById(`val-${id}`).innerText = angle + "°";
+    
+    if (now - lastRequestTime < THROTTLE_MS) return;
+    lastRequestTime = now;
 
-    const res = await fetch('/api/set_servo', {
+    fetch('/api/set_servo', {
         method: 'POST',
         headers: {'Content-Type': 'application/json'},
         body: JSON.stringify({id, angle})
     });
-    
-    if (res.ok) {
-        input.value = ""; // Очищаем поле ввода после успешной отправки
-        updateData();
-    } else {
-        alert("Error setting angle!");
-    }
+}
+
+function applyGroup(val) {
+    document.getElementById('group-val').innerText = val + "°";
+    document.querySelectorAll('.servo-sync:checked').forEach(cb => {
+        setAngle(cb.dataset.id, val);
+    });
 }
 
 async function sendCmd() {
-    const cmdInput = document.getElementById('cmd-input');
-    const cmd = cmdInput.value;
-    if (!cmd) return;
-
-    const res = await fetch('/api/picolink', {
+    const cmd = document.getElementById('cmd-input').value;
+    await fetch('/api/picolink', {
         method: 'POST',
         headers: {'Content-Type': 'application/json'},
         body: JSON.stringify({cmd})
     });
-
-    if (res.ok) {
-        cmdInput.value = '';
-    } else {
-        alert("Error sending to picolink");
-    }
+    document.getElementById('cmd-input').value = '';
 }
 
-setInterval(updateData, 2000);
+// Запуск
 updateData();
 </script>
 </body>
 </html>
 """
+import logging
 import os
 import glob
 from flask import Flask, render_template_string, jsonify, request
+log = logging.getLogger('werkzeug')
+log.setLevel(logging.ERROR)
 
 app = Flask(__name__)
 
