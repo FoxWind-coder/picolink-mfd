@@ -7,22 +7,21 @@ HTML_TEMPLATE = """
         body { font-family: 'Segoe UI', sans-serif; background: #121212; color: #e0e0e0; display: flex; gap: 20px; padding: 20px; margin: 0; height: 100vh; box-sizing: border-box; }
         .column { flex: 1; background: #1e1e1e; padding: 15px; border-radius: 12px; border: 1px solid #333; display: flex; flex-direction: column; overflow: hidden; }
         h2 { border-bottom: 2px solid #007bff; padding-bottom: 10px; margin: 0 0 15px 0; font-size: 1.2em; }
-        
         .scroll-area { flex-grow: 1; overflow-y: auto; padding-right: 5px; }
         .item { background: #252525; margin-bottom: 10px; padding: 12px; border-radius: 8px; border-left: 4px solid #007bff; }
         
-        .servo-grid { display: grid; grid-template-columns: 70px 1fr 100px; gap: 10px; align-items: center; }
-        .group-control { background: #1a3a5a; padding: 15px; border-radius: 8px; margin-top: 10px; }
+        /* Сетка теперь включает 4 колонки для кнопки Set */
+        .servo-grid { display: grid; grid-template-columns: 50px 1fr 60px 45px; gap: 8px; align-items: center; }
         
-        /* HWMON Styles */
+        .group-control { background: #1a3a5a; padding: 15px; border-radius: 8px; margin-top: 10px; }
         .hw-item { background: #2a2a2a; padding: 10px; margin-bottom: 8px; border-radius: 6px; }
         .hw-row { display: flex; justify-content: space-between; margin-bottom: 5px; }
         .formula-input { width: 100%; background: #121212; color: #00ff00; border: 1px solid #444; font-family: monospace; padding: 3px; font-size: 0.8em; }
         .raw-val { color: #666; font-size: 0.7em; }
-
         input[type="range"] { width: 100%; cursor: pointer; }
-        input[type="number"], input[type="text"] { background: #333; color: #fff; border: 1px solid #444; border-radius: 4px; padding: 4px; }
+        input[type="number"], input[type="text"] { background: #333; color: #fff; border: 1px solid #444; border-radius: 4px; padding: 4px; width: 100%; box-sizing: border-box; }
         button { cursor: pointer; background: #007bff; color: white; border: none; padding: 6px 12px; border-radius: 4px; }
+        button.set-btn { padding: 4px 2px; font-size: 0.8em; background: #28a745; }
         .value { font-family: monospace; color: #00ff00; font-weight: bold; }
     </style>
 </head>
@@ -31,7 +30,6 @@ HTML_TEMPLATE = """
 <div class="column">
     <h2>Servos</h2>
     <div class="scroll-area" id="servos-list"></div>
-    
     <div class="group-control">
         <div style="display: flex; justify-content: space-between;">
             <span class="label">GROUP SYNC</span>
@@ -60,14 +58,11 @@ HTML_TEMPLATE = """
 
 <script>
 let lastRequestTime = 0;
-const THROTTLE_MS = 30; // Лимит отправки - 33 кадра в секунду
-const hwConfigs = {}; // Храним формулы здесь
+const THROTTLE_MS = 30; 
+const hwConfigs = {};
 
-// Функция безопасного вычисления формулы
 function calculate(formula, x) {
     try {
-        // Заменяем 'x' на значение и вычисляем. 
-        // В продакшене лучше использовать кастомный парсер, но для отладки eval сойдет.
         return eval(formula.replace(/x/g, x)).toFixed(2);
     } catch (e) { return "Err"; }
 }
@@ -77,7 +72,6 @@ async function updateData() {
         const res = await fetch('/api/data');
         const data = await res.json();
 
-        // Обновление Сервоприводов
         const servoList = document.getElementById('servos-list');
         data.servos.forEach(s => {
             let item = document.getElementById(`servo-container-${s.id}`);
@@ -94,8 +88,8 @@ async function updateData() {
                         <span class="value" id="val-${s.id}">${s.target}°</span>
                         <input type="range" id="range-${s.id}" min="0" max="180" value="${s.target}" 
                                oninput="setAngle('${s.id}', this.value)">
-                        <input type="number" id="inp-${s.id}" value="${s.target}" min="0" max="180" 
-                               oninput="setAngle('${s.id}', this.value)">
+                        <input type="number" id="inp-${s.id}" value="${s.target}" min="0" max="180">
+                        <button class="set-btn" onclick="setAngle('${s.id}', document.getElementById('inp-${s.id}').value)">SET</button>
                     </div>`;
                 servoList.appendChild(div);
             } else {
@@ -107,12 +101,10 @@ async function updateData() {
             }
         });
 
-        // Обновление HWMON
         const hwList = document.getElementById('hwmon-list');
         data.hwmon.forEach(h => {
             const safeId = h.name.replace(/[^a-z0-9]/gi, '_');
             if (!hwConfigs[safeId]) {
-                // Дефолтная формула
                 let def = "x";
                 if (h.name.toLowerCase().includes("thermal")) def = "x / 1000";
                 else if (h.value <= 1024) def = "x * (3.3 / 1023)";
@@ -147,14 +139,12 @@ async function updateData() {
 
     } catch (e) { console.log(e); }
     
-    // Рекурсивный вызов с динамическим интервалом
     const interval = document.getElementById('update-rate').value || 2;
     setTimeout(updateData, interval * 1000);
 }
 
 async function setAngle(id, angle) {
     const now = Date.now();
-    // Обновляем UI мгновенно для плавности
     document.getElementById(`val-${id}`).innerText = angle + "°";
     
     if (now - lastRequestTime < THROTTLE_MS) return;
@@ -184,16 +174,17 @@ async function sendCmd() {
     document.getElementById('cmd-input').value = '';
 }
 
-// Запуск
 updateData();
 </script>
 </body>
 </html>
 """
+
 import logging
 import os
 import glob
 from flask import Flask, render_template_string, jsonify, request
+
 log = logging.getLogger('werkzeug')
 log.setLevel(logging.ERROR)
 
@@ -203,7 +194,6 @@ SERVO_PATH = "/sys/class/pico-servo/"
 HWMON_PATH = "/sys/class/hwmon/"
 PICOLINK_DEV = "/dev/picolink"
 
-# Глобальный словарь для хранения последних заданных углов
 servo_cache = {} 
 
 def get_servos():
@@ -216,16 +206,14 @@ def get_servos():
     found_dirs = [d for d in os.listdir(SERVO_PATH) if d.startswith("servo")]
     
     for name in sorted(found_dirs):
-        # Если мотор новый — пусть будет "N/A" до первой команды
         if name not in servo_cache:
             servo_cache[name] = "N/A" 
         
         current_servos.append({
             "id": name, 
-            "target": servo_cache[name] # Это наше состояние в памяти
+            "target": servo_cache[name]
         })
         
-    # Чистка кеша
     active_names = set(found_dirs)
     servo_cache = {k: v for k, v in servo_cache.items() if k in active_names}
     
@@ -236,39 +224,31 @@ def get_hwmon():
     base_path = "/sys/class/hwmon/"
     
     if not os.path.exists(base_path):
-        print("DEBUG HWMON: /sys/class/hwmon/ not found!")
         return []
 
-    # Перебираем все папки hwmon*
     hwmon_dirs = sorted(glob.glob(os.path.join(base_path, "hwmon*")))
     
     for d in hwmon_dirs:
         try:
-            # 1. Пытаемся прочитать имя устройства
             name_file = os.path.join(d, "name")
             hw_name = "unknown"
             if os.path.exists(name_file):
                 with open(name_file, 'r') as f:
                     hw_name = f.read().strip()
             
-            # 2. Ищем файлы значений (как в вашем shell скрипте)
-            # Приоритет: in0_input -> value -> любые другие *_input
             value_files = []
             
-            # Проверяем конкретные файлы из вашего скрипта
             for candidate in ["in0_input", "value"]:
                 path = os.path.join(d, candidate)
                 if os.path.exists(path):
                     value_files.append(path)
             
-            # Добавляем все остальные файлы, заканчивающиеся на _input (если они еще не добавлены)
             all_inputs = glob.glob(os.path.join(d, "*_input"))
             for inp in all_inputs:
                 if inp not in value_files:
                     value_files.append(inp)
 
             if not value_files:
-                print(f"DEBUG HWMON: Found dir {d} ({hw_name}), but NO value files found.")
                 continue
 
             for vf in value_files:
@@ -281,12 +261,11 @@ def get_hwmon():
                         "name": f"{hw_name} ({label})",
                         "value": val
                     })
-                    # print(f"DEBUG HWMON: Read {hw_name}/{label} = {val}") # Раскомментируйте для полного спама
-                except Exception as e:
-                    print(f"DEBUG HWMON: Could not read file {vf}: {e}")
+                except Exception:
+                    continue
 
-        except Exception as e:
-            print(f"DEBUG HWMON: Error processing directory {d}: {e}")
+        except Exception:
+            continue
             
     return sensors
 
@@ -310,10 +289,8 @@ def set_servo():
     path = os.path.join(SERVO_PATH, servo_id, "angle")
     
     try:
-        # Пишем в драйвер
         with open(path, 'w') as f:
             f.write(angle)
-        # Сохраняем в кеш, так как прочитать из драйвера нельзя
         servo_cache[servo_id] = angle
         return jsonify({"status": "ok"})
     except Exception as e:
@@ -330,7 +307,6 @@ def send_picolink():
         return jsonify({"status": "ok"})
     except Exception as e:
         return jsonify({"status": "error", "message": str(e)}), 500
-
 
 if __name__ == '__main__':
     app.run(host='0.0.0.0', port=5000, debug=False)
